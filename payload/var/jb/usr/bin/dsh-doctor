@@ -1,0 +1,508 @@
+#!/bin/sh
+# dsh-doctor —— 装包后逐项自检。每一项都是「真跑一遍」，不是看文件在不在。
+# +ios3 修正：
+#   1) node 大小改用 wc -c。iOS 的 stat 方言会把 `stat -f %z` 解释成
+#      「文件系统状态」输出一大段文本（旧版因此误报 FAIL + Illegal number）。
+#   2) hw.memsize 在 iOS 上不存在，旧版无谓 WARN；改为中性提示，不计数。
+#   3) 删掉 2e5 次循环的「JIT 判定」——那只测 JS 优化编译，A11 上会给假
+#      绿灯（截图里 [ OK ] V8 JIT 通道畅通 之后依然 bus error）。换成真跑
+#      smoke.js：fetch -> 内置 undici -> llhttp WASM 编译 -> HTTP 往返。
+#   4) headless / web 检测捕获退出码，SIGBUS(138)/SEGV(139) 明确报出来，
+#      并使用自动选出的 V8 档位参数，与 dsh 启动路径完全一致。
+JB=/var/jb
+D="$JB/usr/lib/dsh"
+NODE="${DSH_NODE:-$D/bin/node}"
+BIN="$D/node_modules/@deepseek-ai/dsh/lib/bin.js"
+SMOKE="$D/smoke.js"
+ENVF="$JB/etc/dsh/dsh.env"
+[ -f "$ENVF" ] && . "$ENVF"
+export HOME="${HOME:-/var/mobile}"
+export DSH_HOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+export PATH="$JB/usr/bin:$JB/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export NODE_PATH="$D/node_modules"
+mkdir -p "$DSH_HOME" 2>/dev/null || true
+
+# +ios10：Node 22.12 的 node:sqlite 需显式开关。这里给默认值兜底（smoke.js
+# 缺失时第 6 项不会 source tier.sh，也仍然要保证下面的 boot 检测带 flag）。
+TIER_SQLITE_ARGS="--experimental-sqlite --disable-warning=ExperimentalWarning"
+
+PASS=0; FAIL=0; WARN=0
+ok(){  printf '  [ OK ] %s\n' "$1"; PASS=$((PASS+1)); }
+bad(){ printf '  [FAIL] %s\n' "$1"; printf '         -> %s\n' "$2"; FAIL=$((FAIL+1)); }
+wrn(){ printf '  [WARN] %s\n' "$1"; printf '         -> %s\n' "$2"; WARN=$((WARN+1)); }
+inf(){ printf '  [INFO] %s\n' "$1"; }
+
+echo "=== dsh-doctor / iPhone X (A11, arm64) / iOS 16.7.15 / Dopamine 3.0 rootless / +ios14 ==="
+echo
+
+# 0) 【+ios14】启动前自愈，必须先跑。
+#    +ios12 的 cleanPatch() 会把 cordis.patch.yml 删成纯注释（顶层非 YAML
+#    数组），dsh 一启动就 fatal。若这里不先修，下面第 9 项 headless boot
+#    会先崩，整份 doctor 根本跑不完 —— 真机截图正是「doctor 全绿、敲 dsh 崩」。
+#    heal 会全量扫描 home 级 + profiles/* 级 patch 并强制写回合法数组。
+if [ -f "$D/dsh-home-heal.cjs" ]; then
+    "$NODE" "$D/dsh-home-heal.cjs" "$DSH_HOME" "$D" 2>/dev/null || true
+fi
+
+# 1 越狱态：必须用 -L 判链接本身，不能用 -e（重启后链接在、target 没了）
+if [ -L "$JB" ] && [ -d "$JB/usr" ]; then
+    ok "/var/jb 是有效 rootless 链接 -> $(readlink "$JB" 2>/dev/null)"
+else
+    bad "/var/jb 不可用（半不拴绳越狱重启后会失效）" "打开 Dopamine 点一次 Jailbreak 再重试"
+fi
+
+# 2 Node 可执行且版本 >=22.0（兼容补丁已打，不要求 22.14+）
+if [ -x "$NODE" ]; then
+    V=$("$NODE" -v 2>/dev/null)
+    MAJ=$(printf '%s' "$V" | sed 's/^v//' | cut -d. -f1)
+    if [ -n "$MAJ" ] && [ "$MAJ" -ge 22 ] 2>/dev/null; then
+        ok "Node 运行时 $V（>=22.0，兼容补丁已应用）"
+    else
+        bad "Node 版本过低或无法解析：$V" "需 >=22.0（util.parseEnv）；本包内置 22.12.0"
+    fi
+else
+    bad "Node 二进制不可执行：$NODE" "重装 deb；或 DSH_NODE 指向设备上的其它 node"
+fi
+
+# 3 Node 文件大小完整性。用 wc -c —— POSIX 通用，不依赖 iOS 的 stat 方言。
+NS=$(wc -c < "$NODE" 2>/dev/null | tr -d '[:space:]')
+case "$NS" in
+    ''|*[!0-9]*) NS=0 ;;
+esac
+if [ "$NS" -ge 101297000 ] && [ "$NS" -le 101297080 ]; then
+    ok "node 大小 $NS 字节（精确匹配 101,297,040，未截断）"
+else
+    bad "node 大小 $NS 字节异常（应为 101,297,040）" "重传 deb 并重装；SHA 见 dist/SHA256SUMS.txt"
+fi
+
+# 4 JIT entitlement（内置 node 自带完整签名，只核验不重签）
+if command -v ldid >/dev/null 2>&1; then
+    if ldid -e "$NODE" 2>/dev/null | grep -q dynamic-codesigning; then
+        ok "dynamic-codesigning entitlement 已签"
+    else
+        wrn "ldid 未读到 dynamic-codesigning" "补签: ldid -S$D/ent.plist $NODE ；以第 6 项实跑为准"
+    fi
+elif strings "$NODE" 2>/dev/null | grep -q dynamic-codesigning; then
+    ok "二进制内含 JIT entitlement（无 ldid，按 strings 判定）"
+else
+    wrn "无 ldid 且未读到 entitlement" "以第 6 项实跑结果为准"
+fi
+
+# 5 --expose-internals 能否拿到 5 个内部模块（shim 的地基）
+E5=/tmp/dsh_doctor_ei.$$
+"$NODE" --expose-internals -e '
+  const ids=["internal/modules/esm/loader","internal/modules/cjs/loader","internal/modules/helpers","internal/modules/esm/utils","internal/modules/esm/resolve"];
+  for(const id of ids) require(id);
+  const esm=require("internal/modules/esm/loader").getOrInitializeCascadedLoader();
+  if(typeof esm.getModuleJobForImport!=="function"&&typeof esm.getOrCreateModuleJob!=="function") process.exit(1);
+' >"$E5" 2>&1
+RC5=$?
+if [ "$RC5" -eq 0 ]; then
+    ok "--expose-internals 五个内部模块全部可加载（loader 形态匹配）"
+else
+    bad "--expose-internals 路径不通 (rc=$RC5)" "$(head -2 "$E5" | tr '\n' ' ')"
+fi
+rm -f "$E5" 2>/dev/null || true
+
+# 6 【+ios3 核心】逐档跑 WASM 冒烟探针，报告哪一档能过、哪些崩了
+echo "  ---- V8 启动档位探测（真跑 fetch -> llhttp WASM 编译）----"
+if [ -f "$SMOKE" ]; then
+    . "$D/tier.sh"
+    DSH_REPROBE=1
+    export DSH_REPROBE
+    TRIED=""; WIN=""
+    while IFS='|' read -r _n _a; do
+        [ -z "$_n" ] && continue
+        # shellcheck disable=SC2086
+        "$TIER_NODE" $_a "$TIER_SMOKE" >/dev/null 2>&1
+        RCP=$?
+        if [ "$RCP" -eq 0 ]; then
+            printf '         [ OK ] %-9s rc=0   <- 可用\n' "$_n"
+            [ -z "$WIN" ] && WIN=$_n
+        else
+            case "$RCP" in
+                13[2-9]|14[0-9]) printf '         [SIGBUS/SEGV] %-9s rc=%s\n' "$_n" "$RCP" ;;
+                *)               printf '         [fail] %-9s rc=%s\n' "$_n" "$RCP" ;;
+            esac
+        fi
+        TRIED="$TRIED $_n"
+    done <<EOF
+$TIERS
+EOF
+    if [ -n "$WIN" ]; then
+        printf '%s\n' "$WIN" > "$TIER_CACHE" 2>/dev/null || true
+        ok "WASM 链路可用，首选档位 [$WIN]（已写入缓存）"
+        TIER_ARGS=$(tier_args_for "$WIN")
+        export TIER_ARGS
+    else
+        bad "所有 V8 档位的 WASM 冒烟探针都失败" "node 二进制或签名异常；确认大小/SHA 后重装"
+        TIER_ARGS=""
+        export TIER_ARGS
+    fi
+else
+    bad "缺少冒烟探针 $SMOKE" "重装 +ios3 包（+ios2 没有这个文件）"
+    TIER_ARGS=""
+    export TIER_ARGS
+fi
+
+# 7 dsh CLI 入口（补丁后 bin.js 无条件调用 runCli，不依赖 import.meta.main）
+# shellcheck disable=SC2086
+DV=$("$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" --version 2>/dev/null)
+RC7=$?
+if [ "$DV" = "0.2.1-rc.5" ]; then
+    ok "dsh CLI 入口正常 -> $DV"
+elif [ "$RC7" -eq 138 ] || [ "$RC7" -eq 139 ]; then
+    bad "dsh --version 被 SIGBUS/SIGSEGV 杀掉 (rc=$RC7)" "见第 6 项档位探测"
+else
+    bad "dsh --version 输出为空或不符（得到：'${DV}'，rc=$RC7）" "确认 bin.js 的 import.meta.main 补丁已应用"
+fi
+
+# 8 headless 配置树
+# shellcheck disable=SC2086
+"$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" headless --dump-default-config >/dev/null 2>&1
+RC8=$?
+if [ "$RC8" -eq 0 ]; then
+    ok "headless profile 配置树可解析（shim 未阻断 profile 加载）"
+else
+    bad "headless 配置树解析失败 (rc=$RC8)" "检查两个 addon shim 与三处兼容补丁是否覆盖到位"
+fi
+
+# 9 headless 真 boot（假 key，到 401 即算穿过全部启动阶段）
+# iOS 的 BSD base 没有 GNU timeout，用「后台 + 轮询 + kill」。
+HT=/tmp/dsh_doctor_headless.$$
+# shellcheck disable=SC2086
+DEEPSEEK_API_KEY=sk-doctor-placeholder "$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" headless "ping" >"$HT" 2>&1 &
+HPID=$!
+i=0
+while [ "$i" -lt 25 ]; do
+    grep -qiE "api key|401|auth|Cannot find module|No usable native binding|host preparation failed|failed to import|pending \(waiting for services" "$HT" 2>/dev/null && break
+    kill -0 "$HPID" 2>/dev/null || break
+    sleep 1; i=$((i+1))
+done
+if kill -0 "$HPID" 2>/dev/null; then kill "$HPID" 2>/dev/null || true; fi
+wait "$HPID" 2>/dev/null; RCH=$?
+HL=$(cat "$HT" 2>/dev/null); rm -f "$HT" 2>/dev/null || true
+# +ios10：只看「原因行」判定，不再把裸 "did not activate" 一律当故障。
+# dsh-im 未配置 IM 渠道凭据时，插件其实已成功 import，Cordis 会打印
+#   dsh: warning: 1 entry did not activate
+#   xmanrui-dsh-im (...): pending (waiting for services: connection, credentials)
+# 这是正常等待态。旧逻辑修好 node:sqlite 后仍会因这行误报 FAIL。
+# 真正的加载失败一定带 failed to import / ERR_ / Cannot find module 等原因。
+BOOT_ERR=$(printf '%s\n' "$HL" | grep -iE 'failed to import|Cannot find module|No usable native binding|host preparation failed|ERR_FLOCK|ERR_[A-Z_]+|SyntaxError|TypeError|lthashantitampering|is not a function' | head -2 | tr '\n' ' ')
+PENDING=$(printf '%s\n' "$HL" | grep -ci 'pending (waiting for services' 2>/dev/null)
+case "$PENDING" in ''|*[!0-9]*) PENDING=0 ;; esac
+if [ -n "$BOOT_ERR" ]; then
+    bad "headless boot 撞到依赖或插件加载问题" "$BOOT_ERR"
+elif echo "$HL" | grep -qiE "api key|401|authentication|llm|model listing|AUTH:"; then
+    ok "headless 真实 boot 穿过全部启动阶段，到达模型调用层（401）"
+    if [ "${PENDING:-0}" -gt 0 ] 2>/dev/null; then
+        inf "dsh-im 已加载，等待 IM 渠道凭据/连接（正常等待态，非故障）"
+    fi
+elif [ "${PENDING:-0}" -gt 0 ] 2>/dev/null; then
+    ok "headless 真实 boot 穿过全部启动阶段（插件已 import，等待凭据）"
+elif [ "$RCH" -ge 128 ] 2>/dev/null; then
+    bad "headless boot 被信号杀死 (rc=$RCH, sig=$((RCH-128)))" "WASM 编译写可执行内存失败；第 6 项应已降级到 nowasm 档"
+else
+    wrn "headless boot 未在窗口内给出可归类结果 (rc=$RCH)" "$(echo "$HL" | head -2)"
+fi
+
+# 10 web 服务真实起来（动态高位端口，避免和设备上其它服务冲突）
+PORT=$(( 20000 + $$ % 40000 ))
+WT=/tmp/dsh_doctor_web.$$
+# shellcheck disable=SC2086
+DEEPSEEK_API_KEY=sk-doctor-placeholder "$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" web --no-open --port "$PORT" >"$WT" 2>&1 &
+WPID=$!
+i=0
+while [ "$i" -lt 25 ]; do
+    grep -q "http://127.0.0.1:$PORT" "$WT" 2>/dev/null && break
+    kill -0 "$WPID" 2>/dev/null || break
+    sleep 1; i=$((i+1))
+done
+if grep -q "http://127.0.0.1:$PORT" "$WT" 2>/dev/null; then
+    ok "web 服务已监听并输出带 token 的访问地址 (port $PORT)"
+else
+    if kill -0 "$WPID" 2>/dev/null; then kill "$WPID" 2>/dev/null || true; fi
+    wait "$WPID" 2>/dev/null; RCW=$?
+    case "$RCW" in
+        13[2-9]|14[0-9]) bad "web 服务被信号杀死 (rc=$RCW, sig=$((RCW-128)))" "第 6 项档位探测失败；用 DSH_TIER=nowasm 强制零 JIT 档" ;;
+        *) bad "web 服务未起来 (rc=$RCW)" "$(head -3 "$WT" | tr '\n' ' ')" ;;
+    esac
+fi
+if kill -0 "$WPID" 2>/dev/null; then kill "$WPID" 2>/dev/null || true; fi
+wait "$WPID" 2>/dev/null || true
+rm -f "$WT" 2>/dev/null || true
+
+# 11 DSH_HOME 可写 / 命令在 PATH 里
+if [ -d "$DSH_HOME" ] && ( : > "$DSH_HOME/.doctor" ) 2>/dev/null; then
+    rm -f "$DSH_HOME/.doctor"; ok "DSH_HOME 可写 -> $DSH_HOME"
+else
+    bad "DSH_HOME 不可写" "运行: mkdir -p $DSH_HOME && chmod 777 $DSH_HOME"
+fi
+if command -v dsh >/dev/null 2>&1; then ok "终端 PATH 能找到 dsh -> $(command -v dsh)"; else
+    bad "dsh 不在 PATH" "运行: export PATH=/var/jb/usr/bin:\$PATH 或用 /var/jb/usr/bin/dsh"
+fi
+
+# 12 内存信息：iOS 没有 hw.memsize，改为中性 INFO，不再产生无谓 WARN
+TOTAL=$(sysctl -n hw.memsize 2>/dev/null || sysctl -n hw.physmem 2>/dev/null || sysctl -n hw.memsize2 2>/dev/null || echo 0)
+case "$TOTAL" in ''|*[!0-9]*) TOTAL=0 ;; esac
+if [ "$TOTAL" -gt 0 ]; then
+    MB=$((TOTAL / 1048576))
+    inf "物理内存 ${MB}MB；dsh.env 已限 V8 堆 384MB，不要与 MC 同时运行"
+else
+    inf "sysctl 无法读取物理内存（iOS 正常现象，不影响运行）；已限 V8 堆 384MB"
+fi
+
+# 13 【+ios5】fetch-shim 最小侵入校验
+#   +ios3/+ios4 版把原生 Headers/Request/Response/FormData 一起覆盖成半成品类，
+#   后端 Web 框架处理 /api/... POST 时抛异常并静默断连 -> Safari 报 "Load failed"
+#   （工作台「选择工作区目录」弹窗 directoryPicker/list failed）。+ios5 只覆盖
+#   fetch / WebSocket，保留原生全局。此项让用户能确认热修是否真的落地。
+SHIM="$JB/usr/lib/dsh/fetch-shim.cjs"
+if [ -f "$SHIM" ]; then
+    if grep -qE "\['Response', ShimResponse\]|\['Request', ShimRequest\]|\['Headers', ShimHeaders\]" "$SHIM"; then
+        bad "fetch-shim 仍是旧版全覆盖（原生 Response/Request/Headers 被顶掉）" \
+            "跑 sh fix-api-load-failed.sh，然后 Ctrl+C 退出 dsh 再重新敲 dsh"
+    else
+        ok "fetch-shim 为 +ios5 最小侵入版（原生全局保留，/api POST 不再断连）"
+    fi
+else
+    wrn "找不到 fetch-shim.cjs（非 nowasm 档可不加载）" "$SHIM"
+fi
+
+# 14 【+ios6】fetch-shim 的 Response.body 幂等校验
+#   旧 shim 的 body getter 第二次访问抛 "Body is unusable"，而 dsh 的 SSE 路径
+#   恰好连读两次 -> 被包成 "DeepSeek Messages transport failed" (TRANSPORT)，
+#   重试 5/5 全失败（工作台发消息一直转圈）。+ios6 让 body 幂等并补齐
+#   formData()/bytes()。此项确认热修是否落地。
+if [ -f "$SHIM" ]; then
+    if grep -q '_bodyLocked' "$SHIM" && grep -q 'async formData()' "$SHIM"; then
+        ok "fetch-shim 为 +ios6 版（body 幂等，SSE 流式请求不会再报 TRANSPORT）"
+    else
+        bad "fetch-shim 缺少 +ios6 的 body 幂等修复" \
+            "跑 sh fix-transport.sh，然后 Ctrl+C 退出 dsh 再重新敲 dsh"
+    fi
+else
+    wrn "找不到 fetch-shim.cjs（非 nowasm 档可不加载）" "$SHIM"
+fi
+
+# 15 【+ios14】patch 文件合法性：真解析所有 home 级 / profile 级 patch
+#     +ios12 只清 home 级且把文件删成纯注释 -> js-yaml 返回 null ->
+#     parsePatchList(index.js:4000) 抛 "must be a top-level YAML array" 启动
+#     fatal；profile 级残留又导致 headless boot ERR_MODULE_NOT_FOUND。
+#     这里用包内 yaml 模块真解析一遍，不再靠 grep 假绿灯。
+UPATCH="$DSH_HOME/cordis.patch.yml"
+if [ -f "$D/node_modules/@xmanrui/dsh-im/lib/index.js" ] || \
+   [ -f "$D/node_modules/@tencent-connect/dsh-qqbot/lib/index.js" ]; then
+    bad "包内仍残留预装插件" "重装 +ios14 deb；或跑 sh fix-ios14.sh"
+else
+    ok "包内无预装插件（干净底座）"
+fi
+PATCHCHK=$("$NODE" -e '
+const fs=require("fs"),path=require("path");
+let yaml; try { yaml=require("yaml"); } catch(e) { console.log("yaml 模块不可用: "+e.message); process.exit(2); }
+const home=process.env.DSH_HOME;
+const files=[path.join(home,"cordis.patch.yml"),path.join(home,"patches.yml")];
+try { for(const e of fs.readdirSync(path.join(home,"profiles"),{withFileTypes:true}))
+    if(e.isDirectory()) for(const n of ["cordis.patch.yml","patches.yml"])
+        files.push(path.join(home,"profiles",e.name,n)); } catch {}
+const bad=[],seen=[];
+for(const f of files) {
+    if(!fs.existsSync(f)) continue;
+    seen.push(path.relative(home,f));
+    let t; try { t=fs.readFileSync(f,"utf8"); } catch { continue; }
+    let p; try { p=yaml.parse(t); } catch(e) { bad.push(f+": YAML 解析失败 "+e.message.slice(0,50)); continue; }
+    if(!Array.isArray(p)) { bad.push(f+": 顶层不是数组 ("+(p===null?"null/纯注释":typeof p)+")"); continue; }
+    if(/id:\s*(im-qqbot|xmanrui-dsh-im)/.test(t)) bad.push(f+": 仍有旧预装挂载");
+}
+if(bad.length) { console.log(bad.join(" | ")); process.exit(1); }
+console.log("OK:"+seen.length+":"+seen.join(","));
+' 2>&1)
+RCPC=$?
+if [ "$RCPC" -eq 0 ]; then
+    ok "全部 patch 文件顶层均为合法 YAML 数组（$(printf '%s' "$PATCHCHK" | cut -d: -f2) 个，无旧预装挂载）"
+else
+    "$NODE" "$D/dsh-home-heal.cjs" "$DSH_HOME" "$D" 2>/dev/null || true
+    PATCHCHK2=$("$NODE" -e '
+const fs=require("fs"),path=require("path"),yaml=require("yaml");
+const home=process.env.DSH_HOME;
+const files=[path.join(home,"cordis.patch.yml"),path.join(home,"patches.yml")];
+try { for(const e of fs.readdirSync(path.join(home,"profiles"),{withFileTypes:true}))
+    if(e.isDirectory()) for(const n of ["cordis.patch.yml","patches.yml"])
+        files.push(path.join(home,"profiles",e.name,n)); } catch {}
+let bad=0; for(const f of files) { if(!fs.existsSync(f))continue;
+    let p; try{p=yaml.parse(fs.readFileSync(f,"utf8"))}catch{bad++;continue}
+    if(!Array.isArray(p))bad++; }
+process.exit(bad?1:0);
+' 2>/dev/null)
+    if [ "$PATCHCHK2" -eq 0 ]; then
+        ok "patch 文件已自动修复为合法数组（+ios14 自愈生效）"
+    else
+        bad "patch 文件仍非法，dsh 启动必然 fatal" "$(printf '%s' "$PATCHCHK" | head -1 | cut -c1-120)"
+    fi
+fi
+
+# 16 【+ios8】会话持久化默认压缩为 none（写读自洽）
+PJ="$D/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
+if [ -f "$PJ" ]; then
+    if grep -q 'const DEFAULT_COMPRESSION = "none";' "$PJ"; then
+        ok "会话默认压缩 none（+ios8，重启后历史对话可恢复）"
+    else
+        bad "会话默认压缩仍是 zstd，重启会丢对话 / corrupt Zstandard" \
+            "跑 sh fix-session.sh；它会改这一行并迁移已有 gzip 会话"
+    fi
+fi
+
+# 17 【+ios12/+ios14】官方安装链路：包内 pnpm + dsh plugin 不再 127
+#     dsh plugin 把参数原样转发给 pnpm；真机缺 pnpm 时必然退出码 127。
+PNPM="$JB/usr/bin/pnpm"
+PNPMV=$("$PNPM" --version 2>/dev/null | head -1)
+if [ -n "$PNPMV" ]; then
+    ok "包内 pnpm 可用（$PNPMV，纯 JS / 0 个 .node）"
+else
+    bad "pnpm 不可用，dsh plugin add 会退出码 127" \
+        "跑 sh fix-ios14.sh 或重装 +ios14 deb"
+fi
+PL="$DSH_HOME/.doctor-plugin.$$"
+# shellcheck disable=SC2086
+"$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" \
+    plugin --profile web list >"$PL" 2>&1 || true
+if grep -qE 'exit code 127|pnpm was not found|command not found|ENOENT.*pnpm' "$PL" 2>/dev/null; then
+    bad "dsh plugin 仍报 127（pnpm 未被找到）" "$(head -1 "$PL" | cut -c1-100)"
+else
+    ok "dsh plugin 转发链路正常（无 127）"
+fi
+rm -f "$PL" 2>/dev/null || true
+
+# 18 【+ios10】node:sqlite builtin 与启动开关（始终检查，不依赖是否装了 dsh-im）
+# shellcheck disable=SC2086
+SQ=$("$NODE" $TIER_SQLITE_ARGS -e '
+    try { const m = require("node:sqlite");
+          process.exit(typeof m.DatabaseSync === "function" ? 0 : 2);
+    } catch (e) { console.error(e.code || e.message); process.exit(3); }
+' 2>&1)
+RCS=$?
+if [ "$RCS" -eq 0 ]; then
+    ok "node:sqlite 可加载（--experimental-sqlite 生效）"
+else
+    bad "node:sqlite 不可加载 (rc=$RCS)" "$(printf '%s' "$SQ" | head -1 | cut -c1-100)"
+fi
+if grep -q 'TIER_SQLITE_ARGS' "$JB/usr/bin/dsh" 2>/dev/null \
+   && grep -q -- '--experimental-sqlite' "$D/tier.sh" 2>/dev/null; then
+    ok "dsh 启动链路已带 sqlite 开关（用户自装 dsh-im 也能 import）"
+else
+    bad "dsh / tier.sh 缺 sqlite 开关" "跑 sh fix-ios14.sh 就地热修"
+fi
+
+# 19 【+ios11/+ios12】扫描所有 dsh-im 副本并自动补齐零 JIT 补丁
+#    用户自装（或旧 pnpm 残留）可能产生多份副本，任意一份没补丁都会让
+#    ESM resolver 加载失败；这里全盘扫描并就地补齐，不再有假绿灯。
+IMLIST=$(find "$D/node_modules" "$DSH_HOME" -maxdepth 14 \
+              -path '*/@xmanrui/dsh-im/lib/index.js' -type f 2>/dev/null | sort -u)
+IMTOT=0; IMBAD=0
+for f in $IMLIST; do
+    IMTOT=$((IMTOT+1))
+    grep -q 'dsh-ios +ios9' "$f" 2>/dev/null || IMBAD=$((IMBAD+1))
+done
+if [ "$IMTOT" -eq 0 ]; then
+    inf "未安装 @xmanrui/dsh-im，跳过第 19 项"
+elif [ "$IMBAD" -eq 0 ]; then
+    ok "全部 $IMTOT 份 dsh-im 副本均已打零 JIT 补丁"
+else
+    "$NODE" "$D/dsh-plugin-compat.cjs" "$DSH_HOME" "$D/node_modules" >/dev/null 2>&1 || true
+    IMBAD2=0
+    for f in $IMLIST; do grep -q 'dsh-ios +ios9' "$f" 2>/dev/null || IMBAD2=$((IMBAD2+1)); done
+    if [ "$IMBAD2" -eq 0 ]; then
+        ok "$IMTOT 份 dsh-im 副本已自动补齐零 JIT 补丁"
+    else
+        bad "$IMBAD2/$IMTOT 份 dsh-im 副本缺补丁且无法修补" \
+            "多为 root 属主；跑 sh fix-ios14.sh 修属主后再跑 dsh-compat"
+    fi
+fi
+
+# 20 【+ios14】新建会话全链路可写 —— 用户报的「无法创建新对话」(EACCES)
+#    真机路径：$DSH_HOME/sessions/--private-preboot-.../dopamine-.../
+#              session--<uuid>/session.v4.jsonl
+#    +ios12/+ios13 的两个假绿坑：
+#      a) 只测 sessions 顶层 -w，深层 root 分组目录没测到；
+#      b) heal 的 treeWritable 只查目录，root 444 的 session.v4.jsonl 漏检；
+#      c) $DSH_HOME 本身 root 555 时 heal 第一行直接 return，全部自愈没跑。
+#    这里真跑「每个分组目录下 mkdir + 写 session.v4.jsonl + 历史文件覆盖」，
+#    与 gateway 的动作一致，不再只看 -w。
+S="$DSH_HOME/sessions"
+mkdir -p "$S" 2>/dev/null || true
+SPF="$DSH_HOME/.doctor-sprobe.$$"
+session_probe() {
+    : > "$SPF" 2>/dev/null || true
+    find "$S" -maxdepth 2 -type d 2>/dev/null | while IFS= read -r _d; do
+        _t="$_d/.doctor-ns-$$"
+        mkdir -p "$_t" 2>/dev/null && \
+            printf '{"v":4}\n' > "$_t/session.v4.jsonl" 2>/dev/null || \
+            printf '%s\n' "$_d" >> "$SPF" 2>/dev/null
+        rm -rf "$_t" 2>/dev/null || true
+    done
+    find "$S" -maxdepth 4 -type f -name '*.jsonl' 2>/dev/null | while IFS= read -r _f; do
+        [ -w "$_f" ] || printf '%s\n' "$_f" >> "$SPF" 2>/dev/null
+    done
+    wc -l < "$SPF" 2>/dev/null | tr -d ' '
+}
+SPN=$(session_probe)
+if [ "${SPN:-0}" -eq 0 ]; then
+    ok "新建会话全链路可写（深层 mkdir + session.v4.jsonl + 历史文件覆盖）"
+else
+    "$NODE" "$D/dsh-home-heal.cjs" "$DSH_HOME" "$D" 2>/dev/null || true
+    SPN2=$(session_probe)
+    if [ "${SPN2:-0}" -eq 0 ]; then
+        ok "新建会话已自愈（$SPN 处 root 属主/只读，rename 修复完成）"
+    else
+        bad "新建会话仍会 EACCES（$SPN2 处不可写）" \
+            "跑 sh fix-ios14.sh；必要时 root 执行 chown -R mobile:mobile $DSH_HOME"
+    fi
+fi
+rm -f "$SPF" 2>/dev/null || true
+
+# 21 【+ios12】装后兼容命令
+if [ -x "$JB/usr/bin/dsh-compat" ] && [ -f "$D/dsh-plugin-compat.cjs" ]; then
+    ok "dsh-compat 可用（装完 dsh-im 跑一次补零 JIT 补丁）"
+else
+    bad "缺 dsh-compat / dsh-plugin-compat.cjs" "跑 sh fix-ios14.sh 或重装 +ios14 deb"
+fi
+
+# 22 【+ios14】pnpm 绝对路径直连 + 零 JIT（CLI 与 service 两份产物，缺一不可）
+#     package.json exports: "./operations" -> lib/types/operations.js（CLI），
+#     "." -> lib/index.js（web 工作台）。两者都以 execa('pnpm', ...,
+#     {extendEnv:false}) 启动 pnpm，真机上 PATH/shebang 不可靠导致 127。
+#     +ios14 再加一条：bin/pnpm.cjs 启用 V8 compile cache，7.2MB bundle
+#     在 A11 上裸跑会 "Command was killed with SIGBUS"（真机卸载插件截图）。
+#     所以两份产物必须同时带 +ios14 标记和零 JIT 参数 __dshPnpmFlags。
+PML="$D/node_modules/@deepseek-ai/dsh-plugin-manager/lib"
+PMBAD=0
+for f in "$PML/index.js" "$PML/types/operations.js"; do
+    grep -q 'dsh-ios +ios14' "$f" 2>/dev/null || PMBAD=$((PMBAD+1))
+    grep -q '__dshPnpmFlags' "$f" 2>/dev/null || PMBAD=$((PMBAD+1))
+done
+if [ "$PMBAD" -eq 0 ]; then
+    ok "pnpm 绝对路径直连 + 零 JIT 已注入（CLI + service，不依赖 PATH / 不 SIGBUS）"
+elif [ -f "$D/apply_pnpm_abs_patch.cjs" ]; then
+    "$NODE" "$D/apply_pnpm_abs_patch.cjs" "$PML" >/dev/null 2>&1 || true
+    PMBAD2=0
+    for f in "$PML/index.js" "$PML/types/operations.js"; do
+        grep -q 'dsh-ios +ios14' "$f" 2>/dev/null || PMBAD2=$((PMBAD2+1))
+        grep -q '__dshPnpmFlags' "$f" 2>/dev/null || PMBAD2=$((PMBAD2+1))
+    done
+    if [ "$PMBAD2" -eq 0 ]; then
+        ok "pnpm 补丁已就地升级到 +ios14（绝对路径 + 零 JIT）"
+    else
+        bad "$PMBAD2 项缺 +ios14 补丁，dsh plugin 会 127 或 SIGBUS" "跑 sh fix-ios14.sh 或重装 +ios14 deb"
+    fi
+else
+    bad "pnpm 补丁缺失，dsh plugin 会 127 或 SIGBUS" "跑 sh fix-ios14.sh 或重装 +ios14 deb"
+fi
+
+echo "=== 汇总: OK=$PASS  WARN=$WARN  FAIL=$FAIL ==="
+if [ "$FAIL" -eq 0 ]; then
+    echo "结论：全部关键项通过。终端输入 dsh 即可启动 web 工作台。"
+    exit 0
+else
+    echo "结论：存在失败项，按上面每条 -> 提示修复后重跑 dsh-doctor。"
+    exit 1
+fi

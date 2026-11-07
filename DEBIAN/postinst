@@ -1,0 +1,113 @@
+#!/bin/sh
+# 安装后处理：rootless deb，所有路径带 /var/jb 前缀。
+set -e
+JB=/var/jb
+D="$JB/usr/lib/dsh"
+NODE="$D/bin/node"
+
+if [ ! -L "$JB" ]; then
+    echo "dsh: 未检测到 rootless 越狱环境 (/var/jb)，跳过运行时配置。" >&2
+    exit 0
+fi
+
+chmod 755 "$NODE" "$JB/usr/bin/dsh" "$JB/usr/bin/dsh-doctor" 2>/dev/null || true
+
+# 重要：本包内置 node 来自上游 deb，二进制自身已带完整 JIT entitlements
+# （allow-jit / allow-unsigned-executable-memory / dynamic-codesigning /
+#  skip-library-validation / no-sandbox 等 9 项，直接签在 LC_CODE_SIGNATURE 里）。
+# 绝不能用旧版那份只有 4 项的 ent.plist 无条件重签 —— 那会把 JIT 权限覆盖掉，
+# 造成「node -v 正常、一执行 JS 就 SIGBUS」。策略：
+#   1) 二进制自带 dynamic-codesigning -> 原封不动保留原签名，只 trust-cache；
+#   2) 确实缺 entitlement            -> 用补全的 ent.plist（原 9 项的超集）补签。
+HAS_JIT=0
+if command -v ldid >/dev/null 2>&1; then
+    if ldid -e "$NODE" 2>/dev/null | grep -q dynamic-codesigning; then HAS_JIT=1; fi
+elif strings "$NODE" 2>/dev/null | grep -q dynamic-codesigning; then
+    HAS_JIT=1
+fi
+if [ "$HAS_JIT" -eq 1 ]; then
+    echo "dsh: node 自带完整 JIT entitlement，保留原签名。"
+elif command -v ldid >/dev/null 2>&1; then
+    echo "dsh: node 缺 JIT entitlement，用 ent.plist 补签。"
+    ldid -S"$D/ent.plist" "$NODE" 2>/dev/null || ldid -S "$NODE" 2>/dev/null || true
+fi
+
+# 尽力而为：把 node 注入 trustcache。Dopamine 的 dyldhook 通常会自动注册
+# jbroot 内已签名二进制，但手动 inject 一次可确保 dynamic-codesigning
+# entitlement（V8 JIT 写可执行内存）在内核侧生效。失败不影响安装。
+if command -v trustcache >/dev/null 2>&1; then
+    trustcache inject "$NODE" 2>/dev/null || true
+fi
+
+mkdir -p "$JB/var/mobile/.dsh"
+chmod 777 "$JB/var/mobile/.dsh" 2>/dev/null || true
+
+# +ios8：升级安装（+ios2~+ios7）时自动修「重启 DSH 后对话丢失」并迁移历史
+# gzip 会话。新装设备代码本就是 none、也没有历史会话，这里只是幂等空跑。
+# 失败只给提示，绝不阻断安装 —— 用户可稍后手动跑 sh fix-session.sh。
+FIX="$D/fix-session.sh"
+PJ="$D/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
+SESS="$JB/var/mobile/.dsh/sessions"
+if [ -f "$FIX" ]; then
+    NEED=0
+    if [ -f "$PJ" ] && ! grep -q 'const DEFAULT_COMPRESSION = "none";' "$PJ" 2>/dev/null; then
+        NEED=1
+    fi
+    if [ -d "$SESS" ] && \
+       [ "$(find "$SESS" -type f -name '*.jsonl.zstd' 2>/dev/null | wc -l)" -gt 0 ]; then
+        NEED=1
+    fi
+    if [ "$NEED" -eq 1 ]; then
+        echo "dsh: 检测到旧版会话格式，正在就地修复并迁移历史对话..."
+        if sh "$FIX" >/dev/null 2>&1; then
+            echo "dsh: 会话修复完成（重启 dsh 后历史对话即可保留）。"
+        else
+            echo "dsh: [warn] 自动修复未完成，请手动执行 sh $FIX" >&2
+        fi
+    fi
+fi
+
+# +ios14：本包不再预装插件。清掉 +ios7~+ios11 安装期以 root 建过的软链
+# 与 patch —— 它们正是前几轮 "Permission denied"、两份 dsh-im 副本打架、
+# sessions 目录树 root 属主等故障的源头。绝不再往 $DSH_HOME 写插件条目。
+UPATCH="$JB/var/mobile/.dsh/cordis.patch.yml"
+if [ -L "$D/cordis.patch.yml" ]; then
+    rm -f "$D/cordis.patch.yml" 2>/dev/null || true
+fi
+NMHOME="$JB/var/mobile/.dsh/node_modules"
+if [ -L "$NMHOME" ]; then
+    _t=$(readlink "$NMHOME" 2>/dev/null || true)
+    case "$_t" in
+        *"/usr/lib/dsh/node_modules"*) rm -f "$NMHOME" 2>/dev/null || true ;;
+    esac
+fi
+# 用户数据目录自愈由 dsh wrapper 以实际使用者身份跑（dsh-home-heal.cjs）：
+# 只有那时 access(W_OK) 才反映真实权限，root 在 postinst 里跑会误判为全可写。
+# +ios14：postinst 恰好以 root 跑，干脆在这里彻底清掉「另一个 AI 用 root
+# + .zshenv 包装器跑过 dsh」留下的 root 属主树 —— 这是真机
+# "failed to create session: EACCES ... session.v4.jsonl" 的历史根源。
+# chown 给 mobile(501) 后 root 依旧可写（不受权限约束），mobile 也能写。
+# chown/chmod 失败只忽略，wrapper 里的 heal 仍会做免 root 的 rename 自愈。
+DSHH="$JB/var/mobile/.dsh"
+mkdir -p "$DSHH" 2>/dev/null || true
+if command -v chown >/dev/null 2>&1; then
+    chown -R 501:501 "$DSHH" 2>/dev/null || true
+fi
+chmod -R u+rwX "$DSHH" 2>/dev/null || true
+chmod 777 "$DSHH" 2>/dev/null || true
+echo "dsh: 已把 $DSHH 属主统一为 mobile(501)，避免新建会话 EACCES。"
+
+# +ios3：升级安装时清掉旧档位缓存，强制下次启动重新逐档探测
+# （旧缓存可能指向已不存在的档位，或设备环境变了）。
+rm -f "$JB/var/mobile/.dsh/.dsh-tier" 2>/dev/null || true
+chmod 644 "$D/smoke.js" "$D/tier.sh" "$D/fetch-shim.cjs" 2>/dev/null || true
+
+# PATH 兜底：NewTerm 3 / SSH 的 PATH 通常已含 /var/jb/usr/bin，
+# 少数终端只有 /var/jb/bin，补一个软链，保证「敲 dsh 一定能找到」。
+if [ ! -e "$JB/bin/dsh" ]; then
+    mkdir -p "$JB/bin" 2>/dev/null || true
+    ln -sf "$JB/usr/bin/dsh" "$JB/bin/dsh" 2>/dev/null || true
+fi
+
+echo "dsh 安装完成。在终端输入 dsh 启动；输入 dsh-doctor 做逐项自检。"
+exit 0

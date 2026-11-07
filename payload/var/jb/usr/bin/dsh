@@ -1,0 +1,117 @@
+#!/bin/sh
+# dsh — DeepSeek Harness 终端入口（rootless /var/jb）
+# 关键：必须带 --expose-internals，纯 JS shim 才能替代原生 addon。
+#
+# +ios3：启动前用 smoke.js 真跑一次「fetch -> 内置 undici -> llhttp WASM
+# 编译」链路，逐档选出设备上唯一不 SIGBUS 的 V8 参数组合并缓存。
+# 原来那个 2e5 次循环的 JIT 自检只测 JS 优化编译，A11 上会给假绿灯，
+# 然后 exec 进 web 才 bus error —— 已删除。
+
+JB=/var/jb
+D="$JB/usr/lib/dsh"
+NODE="${DSH_NODE:-$D/bin/node}"
+BIN="$D/node_modules/@deepseek-ai/dsh/lib/bin.js"
+ENVF="$JB/etc/dsh/dsh.env"
+
+[ -f "$ENVF" ] && . "$ENVF"
+
+# 1) 越狱态门禁：/var/jb 是半不拴绳越狱的符号链接，重启后 target 会消失，
+#    所以必须用 -L 判链接本身，再确认 target 内的文件真的可读可执行。
+if [ ! -L "$JB" ] || [ ! -x "$NODE" ] || [ ! -f "$BIN" ]; then
+    echo "dsh: 越狱未激活或运行时缺失（/var/jb 不可用）。" >&2
+    echo "     请打开 Dopamine，点一次 Jailbreak，再回到终端重试。" >&2
+    exit 78
+fi
+
+# 2) 运行环境（先设 DSH_HOME，tier.sh 依赖它定位缓存）
+export HOME="${HOME:-/var/mobile}"
+export DSH_HOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+export PATH="$JB/usr/bin:$JB/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export NODE_PATH="$D/node_modules"
+# +ios14：把实际使用的 node 绝对路径传给 dsh 进程。包内 pnpm 绝对路径直连
+# 补丁（apply_pnpm_abs_patch.cjs）优先读 DSH_NODE，真机未指定时自动回退到
+# 推导出的 $D/bin/node；构建机 / 热修验证可用它指向其它 node。
+DSH_NODE="$NODE"; export DSH_NODE
+mkdir -p "$DSH_HOME" 2>/dev/null || true
+
+# 2a) +ios12：用户数据目录自愈 —— 根治「无法创建新对话」(EACCES)
+#     另一个 AI 曾用 root + .zshenv 包装器跑过 dsh，把 $DSH_HOME/sessions/
+#     整棵目录树与若干配置建成 root 属主；mobile 用户新建会话写
+#     session.v4.jsonl 被拒 -> gateway 建不了会话 -> 依赖会话的插件全
+#     「未运行」。heal 脚本用 rename 免 root 修好属主、迁移历史会话，
+#     并清理 +ios7/+ios9 预装时代留下的 patch 条目与软链。
+#     报告走 stderr，不污染 `dsh --dump-config` 的 stdout；幂等，每次启动都跑。
+if [ -f "$D/dsh-home-heal.cjs" ]; then
+    "$NODE" "$D/dsh-home-heal.cjs" "$DSH_HOME" "$D" || true
+fi
+
+# 2b) +ios13 起：本包不再预装任何插件，改让官方安装命令真正可用。
+#     dsh 的 CLI 与 web service 分属两份构建产物，都以 execa('pnpm', ...,
+#     {extendEnv:false}) 启动 pnpm；真机上它自造的 env 里 PATH 找不到
+#     /var/jb/usr/bin、pnpm 的 /usr/bin/env node shebang 也不可靠，于是一直
+#     报 127。构建期已用 apply_pnpm_abs_patch.cjs 把这两份产物改成
+#     「包内 node 绝对路径 + pnpm.cjs 绝对路径」直连，不再依赖 PATH。
+#     store / cache 统一落到 $DSH_HOME，避免写 root 属主目录再次 EACCES。
+#     +ios14：该直连还必须带零 JIT 档参数（见 apply_pnpm_abs_patch.cjs），
+#     否则 pnpm 子进程在 A11 上会 Command was killed with SIGBUS。
+# 强制覆盖，不用 := —— 别的 AI 的 .zshenv 包装器常残留 PNPM_HOME=/root/.pnpm，
+# 尊重它会让 pnpm 往 root 属主目录写，重新触发 EACCES。
+PNPM_HOME="$DSH_HOME/pnpm";                  export PNPM_HOME
+XDG_DATA_HOME="$DSH_HOME/pnpm-data";         export XDG_DATA_HOME
+XDG_CACHE_HOME="$DSH_HOME/pnpm-cache";       export XDG_CACHE_HOME
+npm_config_cache="$DSH_HOME/npm-cache";      export npm_config_cache
+npm_config_store_dir="$DSH_HOME/pnpm/store"; export npm_config_store_dir
+for _d in "$PNPM_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$npm_config_cache"; do
+    mkdir -p "$_d" 2>/dev/null || true
+done
+
+# 3) 内存门禁：iPhone X (3GB) 上给 V8 堆设上限，避免 jetsam 直接 SIGKILL。
+: "${NODE_OPTIONS:=--max-old-space-size=384}"
+export NODE_OPTIONS
+
+# 4) 无参数 = 启动默认 profile（web），并禁止自动开浏览器（iOS 无 xdg-open）。
+if [ "$#" -eq 0 ]; then
+    set -- web --no-open --port "${DSH_WEB_PORT:-3080}"
+fi
+
+# 5) 自动选档（+ios3 核心）。探测结果缓存到 $DSH_HOME/.dsh-tier，
+#    首次启动多花 1~3 秒，之后零开销。DSH_TIER / DSH_REPROBE 可覆盖。
+. "$D/tier.sh"
+if ! tier_select; then
+    echo "dsh: 所有 V8 启动档位都在 WASM 冒烟探针里失败了。" >&2
+    echo "     node = $NODE" >&2
+    echo "     跑 dsh-doctor 看逐档结果；确认 node 二进制完整（101,297,040 字节）。" >&2
+    echo "     可用 DSH_TIER=nowasm dsh 强制走「零 JIT」档。" >&2
+    exit 74
+fi
+
+# 6) 只在首次探测时提示一次，不污染 web 的 HTTP 输出。
+if [ "$TIER_SOURCE" = "probed" ]; then
+    printf 'dsh: 已选定启动档位 [%s]（已缓存，后续启动不再探测）\n' "$TIER_NAME" >&2
+fi
+
+# 7) --expose-internals 不能放进 NODE_OPTIONS（Node 会拒绝），必须作为启动参数。
+#    $TIER_ARGS 故意不加引号：需要拆成多个 argv（--require <path> 等）。
+#    +ios10：$TIER_SQLITE_ARGS 打开 Node 22.12 的 node:sqlite builtin，
+#    否则 dsh-im 顶层静态 import 会 ERR_UNKNOWN_BUILTIN_MODULE 导致整包失效。
+#    不用 exec：留一次「启动后仍崩 -> 自动降级到 nowasm」的兜底机会。
+# shellcheck disable=SC2086
+"$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" "$@"
+RC=$?
+
+# 8) 真正 boot 的负载比冒烟探针重。若仍被 SIGBUS/SIGSEGV/SIGILL 杀死，
+#    强制切到 nowasm（--jitless，完全不生成可执行代码）重试一次，并把
+#    结果写回缓存，避免每次启动都先崩一下。
+case "$RC" in
+    132|133|134|135|136|138|139)
+        if [ "$TIER_NAME" != "nowasm" ]; then
+            printf 'dsh: [%s] 档启动被信号杀死 (rc=%s)，自动降级到 nowasm 重试\n' "$TIER_NAME" "$RC" >&2
+            NOWASM_ARGS=$(tier_args_for nowasm)
+            printf '%s\n' "nowasm" > "$TIER_CACHE" 2>/dev/null || true
+            # shellcheck disable=SC2086
+            "$NODE" $NOWASM_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" "$@"
+            RC=$?
+        fi
+        ;;
+esac
+exit "$RC"

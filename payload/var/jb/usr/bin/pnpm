@@ -1,0 +1,34 @@
+#!/bin/sh
+# pnpm 10.28.2 —— 包内纯 JS 发行版（+ios12）
+#
+# dsh 的 `plugin` 子命令把参数原样转发给 pnpm（bin.js:116），真机原本没有
+# pnpm/npm/npx/corepack/git，所以 `dsh plugin add` 必然退出码 127。
+# 这里用包内 node 直接跑 pnpm 的 CJS 入口，并把 store/cache 全部落到
+# $DSH_HOME 下（避免写 /var/mobile 下 root 属主的目录再次 EACCES）。
+# +ios14：上面那句「纯 JS 解释执行即可」是错的，真机已打脸 ——
+#   bin/pnpm.cjs 显式启用 module.enableCompileCache()/v8-compile-cache，
+#   dist/pnpm.cjs 是 7.2MB bundle，A11 上 V8 后台线程编译 JIT/WASM 时
+#   pthread_jit_write_protect_np 按线程生效，写可执行页即 SIGBUS：
+#     Command was killed with SIGBUS ... pnpm.cjs remove '@xmanrui/dsh-im'
+#   所以包内 pnpm 必须和 dsh 主进程一样走 tier.sh 的「零 JIT」档。
+#   参数与 tier.sh nowasm 档逐字一致；pnpm 是短命子进程，性能损失可忽略。
+D=/var/jb/usr/lib/dsh
+H="${DSH_HOME:-/var/jb/var/mobile/.dsh}"
+
+# 强制覆盖外部残留（如 .zshenv 里的 PNPM_HOME=/root/.pnpm）
+PNPM_HOME="$H/pnpm";                  export PNPM_HOME
+XDG_DATA_HOME="$H/pnpm-data";         export XDG_DATA_HOME
+XDG_CACHE_HOME="$H/pnpm-cache";       export XDG_CACHE_HOME
+npm_config_cache="$H/npm-cache";      export npm_config_cache
+npm_config_store_dir="$H/pnpm/store"; export npm_config_store_dir
+
+for d in "$PNPM_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$npm_config_cache"; do
+    mkdir -p "$d" 2>/dev/null || true
+done
+
+NODE="${DSH_NODE:-$D/bin/node}"
+# +ios14：与 tier.sh nowasm 档一致，彻底不生成可执行代码。
+PFLAGS="--jitless --no-expose-wasm"
+[ -f "$D/fetch-shim.cjs" ] && PFLAGS="$PFLAGS --require $D/fetch-shim.cjs"
+# shellcheck disable=SC2086
+exec "$NODE" $PFLAGS "$D/libexec/pnpm/bin/pnpm.cjs" "$@"

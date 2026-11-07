@@ -1,0 +1,129 @@
+Package: dev.airdevs.dsh
+Name: DSH CLI (DeepSeek Harness)
+Version: 0.2.1-rc.5+ios14
+Section: Terminal Support
+Priority: optional
+Architecture: iphoneos-arm64
+Maintainer: Air-Devs <air2@localhost>
+Description: DeepSeek Harness CLI for rootless jailbroken iOS (A11 compatible)
+ Bundles Node.js 22.12.0 (pure arm64, standard MAP_JIT, tested on iPhone X)
+ plus a pure-JS dsh 0.2.1-rc.5 tree (no native addons) patched for Node 22.12.
+ +ios3 auto-detects a SIGBUS-free V8 tier at first launch and falls back to
+ a zero-JIT (--jitless) HTTP shim on A11 / iOS 16 rootless. Type `dsh` to boot.
+ +ios4 adds a Safari 16.7 (iOS 16 / WebKit 16.6) browser polyfill for the web
+ frontend: AbortSignal.any, Promise.withResolvers, Object.groupBy, Map.groupBy,
+ Array.fromAsync (all Safari 17.4+). Also silences the harmless V8
+ --expose_wasm warning in the zero-JIT tier.
+ +ios5 fixes "directoryPicker/list failed: Load failed" in the web workspace:
+ the zero-JIT fetch shim no longer overrides the native Headers / Request /
+ Response / FormData globals (the backend web framework needs them to build
+ HTTP responses); it overrides only fetch and WebSocket. One-file hotfix:
+ sh fix-api-load-failed.sh, then restart dsh. New installs need no action.
+ +ios6 fixes "DeepSeek Messages transport failed" (TRANSPORT) when sending a
+ chat message: the zero-JIT ShimResponse.body getter was not idempotent, while
+ the DeepSeek SSE path reads response.body twice; the second read threw
+ "Body is unusable" and was folded into a TRANSPORT error on every retry.
+ Also adds formData()/bytes(). One-file hotfix: sh fix-transport.sh, restart dsh.
+ +ios7 preinstalls the official @tencent-connect/dsh-qqbot 0.5.5 plugin:
+ its pure-JS dependency tree is bundled into node_modules (no .node addons),
+ peer packages reuse the host 0.2.1-rc.5 tree, and first launch appends one
+ plugin row to $DSH_HOME/cordis.patch.yml. `dsh plugin add` always exits 127
+ on a phone because dsh forwards to pnpm, which is not on the device -- this
+ build removes that requirement entirely. Set QQBOT_APPID / QQBOT_SECRET in
+ /var/jb/etc/dsh/qqbot.env, or leave them empty to scan a QR code at startup.
+ DSH_QQBOT=0 dsh disables the plugin temporarily. Hotfix for older installs:
+ sh install-qqbot.sh (no need to re-transfer the 113MB deb), then restart dsh.
+ +ios8 fixes "previous conversation disappears after restarting dsh". The
+ Node 22.12 zlib fallback made session-persistence-jsonl WRITE gzip frames
+ while its reader still demanded ZSTD_MAGIC, so sessions were written but
+ never readable. Default compression is now "none" (plain JSONL), self-
+ consistent on Node 22.12. New installs are fixed at build time; upgraded
+ devices get an automatic one-shot migration by postinst (existing gzip
+ session logs are decompressed and the originals archived under
+ $DSH_HOME/sessions-legacy-zstd/). Manual hotfix: sh fix-session.sh,
+ then restart dsh. Plain JSONL is not interoperable with desktop zstd logs.
+ +ios9 preinstalls @xmanrui/dsh-im 5.10.0 (10 IM channels: Feishu,
+ WeChat, WeCom, DingTalk, QQ, Slack, Telegram, Discord, WhatsApp, Matrix).
+ Its 114 runtime deps are bundled in a private nested node_modules (1275
+ files / 0 native addons), isolated from the host and the +ios7 QQ Bot tree.
+ Node >=22.19 is NOT required: the plugin runs on the bundled Node 22.12.0
+ after a build-time zero-JIT patch (A11 nowasm has no WebAssembly; the
+ bundled libsignal WASM glue otherwise aborts the whole plugin import).
+ First launch registers the plugin in $DSH_HOME/cordis.patch.yml and creates
+ the profile->package ESM resolution link. DSH_IM=0 dsh disables it.
+ Hotfix for older installs: sh install-im.sh (7.8MB, self-contained), then
+ restart dsh; --status / --remove supported. WhatsApp encrypted history-sync
+ hash is the only degraded capability on the zero-JIT tier.
+ +ios10 fixes the last A11 failure: "1 extraneous did not activate:
+ xmanrui-dsh-im: failed to import: ERR_UNKNOWN_BUILTIN_MODULE: No such
+ built-in module: node:sqlite". dsh-im 5.10.0 has a top-level static ESM
+ import of node:sqlite; the bundled Node 22.12.0 gates that builtin behind
+ --experimental-sqlite (22.13+ enables it by default, which is why a build
+ host could not reproduce it). All dsh launch paths now pass the flag, so
+ the plugin's SQLite cache works with zero degradation. dsh-doctor gains a
+ check that really loads node:sqlite plus an idempotent im-qqbot auto-mount
+ (removes the stale WARN on devices that ran install-im.sh before dsh).
+ Hotfix for +ios9 devices: sh fix-sqlite.sh (no 125MB re-transfer needed).
+ +ios11 fixes two false-green issues reported after +ios10. (1) The
+ home-level cordis.patch.yml was created by an earlier hotfix running as
+ root, so the mobile user got "cannot create ...: Permission denied" on
+ line 45 of the dsh wrapper while the wrapper still printed "plugin
+ mounted" because the append error was swallowed. dsh, dsh-doctor and
+ the hotfix now use write-temp-then-atomic-replace, which also repairs
+ file ownership, and report a warning instead of faking success. (2) A
+ leftover pnpm-layout copy at node_modules/.pnpm/@xmanrui+dsh-im/5.10.0/
+ was the copy actually imported by the ESM resolver; it never received
+ the +ios9 zero-JIT patch, so dsh-im failed with "ge.lthashantitampering_new
+ is not a function" even though dsh-doctor's single-file check passed.
+ The hotfix scans every @xmanrui/dsh-im/lib/index.js on the device and
+ patches each one; dsh-doctor gains check 19 that fails if any copy is
+ unpatched. Hotfix: sh fix-ios11.sh (also written as fix-sqlite.sh).
+ +ios12 is a clean-base release: the two previously bundled plugins
+ (@xmanrui/dsh-im and @tencent-connect/dsh-qqbot) are removed from the
+ package entirely, and the wrapper no longer writes cordis.patch.yml,
+ creates symlinks, or changes ownership. Instead pnpm 10.28.2 (pure JS,
+ no native addons) is bundled so the official `dsh plugin --profile web
+ add <pkg>` command works on-device instead of exiting 127. Run
+ dsh-compat after installing dsh-im to apply the A11 zero-JIT patch to
+ every local copy. Fixes the "cannot create new session" EACCES failure:
+ dsh-home-heal.cjs uses rename(2) to repair root-owned sessions/ trees
+ and profile config files without needing root, migrating historical
+ *.jsonl sessions. All earlier fixes (tier probe, fetch-shim, Safari 16
+ polyfill, session compression=none, --experimental-sqlite) are retained.
+ +ios13 fixes two regressions found on a real iPhone X after +ios12.
+ (1) "dsh: fatal uncaught exception -> patches: patches.yml/cordis.patch.yml
+ must be a top-level YAML array of loader patch entries". The +ios12 heal
+ deleted the two bundled-plugin rows and left a comment-only file; js-yaml
+ returns null and dsh-app-boot parsePatchList throws on boot. It also
+ cleaned only the home-level file, leaving profiles/*/cordis.patch.yml
+ rows referencing the now-unbundled plugins (headless ERR_MODULE_NOT_FOUND).
+ dsh-home-heal.cjs now scans both levels, removes whole blocks, and
+ forces a valid top-level YAML array ([] when empty); it repairs devices
+ already broken by +ios12. dsh-doctor runs heal before its checks and
+ truly parses every patch file. (2) "dsh plugin ... pnpm was not found"
+ (127): package exports split the CLI (lib/types/operations.js) and the
+ web service (lib/index.js) into two artifacts; both spawn pnpm via execa
+ with extendEnv:false and a dsh-built env, so on-device PATH/shebang
+ lookup fails. apply_pnpm_abs_patch.cjs injects an absolute bundled-node
+ command plus the absolute pure-JS pnpm.cjs path into all 5+5 call sites
+ in each artifact, bypassing PATH entirely. Both fixes ship in the deb
+ and in the one-shot sh fix-ios13.sh hotfix (no 125MB re-transfer).
+ +ios14 fixes two more failures seen on a real iPhone X after
+ +ios13. (1) "Command was killed with SIGBUS" when removing a
+ plugin: the absolute-path pnpm launcher added in +ios13 lost
+ the V8 tier flags, so the 7.2MB pnpm bundle compiled JIT/WASM
+ on a background thread and hit A11 pthread_jit_write_protect.
+ Both CLI and service artifacts now inject the zero-JIT tier
+ (--jitless --no-expose-wasm --require fetch-shim.cjs); devices
+ already on +ios13 are upgraded in place, not skipped. The pnpm
+ wrapper and the hotfix pnpm calls carry the same flags.
+ (2) "failed to create session: EACCES ... session.v4.jsonl":
+ heal bailed out on the first line when $DSH_HOME itself was
+ root-owned, and treeWritable checked only directories so a
+ root 444 session file was missed; dsh-doctor only probed the
+ sessions top level. heal now repairs $DSH_HOME ownership by
+ chmod/rename-swap, checks files too, fixes each unwritable
+ *.jsonl, and transfers root-owned trees to mobile when run as
+ root. dsh-doctor check 20 really creates a deep session file.
+ All fixes ship in sh fix-ios14.sh (no 125MB re-transfer).
+Homepage: https://github.com/deepseek-ai/deepseek-harness

@@ -1,0 +1,22 @@
+# 构建中间产物（1.3G，全部可由 build.sh 重建）
+.build/
+
+# 打包成品与历史归档：118~130MB/个，超过 GitHub 单文件 100MB 硬限
+dist/*.deb
+dist/archive/
+
+# 构建所需的大体积离线二进制（见 README「本仓库内容说明」/ Releases 附件）
+bundles/node-v22.12.0-iphoneos-arm64
+bundles/*.tar.gz
+
+# +ios12 起已弃用的历史预装插件目录（本版不再预装任何插件）
+bundles/dsh-im-addon/
+bundles/qqbot-addon/
+
+# 缓存 / 本地凭据 / 系统垃圾
+__pycache__/
+*.pyc
+*.token
+gh_token
+.env.local
+.DS_Store

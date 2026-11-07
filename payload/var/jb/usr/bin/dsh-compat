@@ -1,0 +1,10 @@
+#!/bin/sh
+# dsh-compat —— 装完插件后补 iOS 兼容补丁（+ios12）
+#
+# 本版不再预装插件，插件由 `dsh plugin --profile web add <包名>` 安装。
+# 装完 @xmanrui/dsh-im 后跑一次本命令，给设备上所有 dsh-im 副本补
+# A11 零 JIT 档的 libsignal WASM 兼容补丁（幂等，可重复跑）。
+# 不写配置、不建软链、不改属主。
+D=/var/jb/usr/lib/dsh
+NODE="${DSH_NODE:-$D/bin/node}"
+exec "$NODE" "$D/dsh-plugin-compat.cjs" "$@"

@@ -1,0 +1,9 @@
+# +ios14 交付物 SHA-256
+# 生成时间: 2026-11-07 08:50 UTC
+# 推荐: fix-ios14.sh（4.7MB 免重传）或 +ios14 deb
+34737a0997b635c228c6388b6d64b69d4f71a83d6ad095863a4e2e6ff2d3a398  dev.airdevs.dsh_0.2.1-rc.5+ios14_iphoneos-arm64.deb
+40de70df194183f77f6796a3bc942e3573d39f001b0e874fece61d269bdb9d13  fix-ios14.sh
+4e8d6d094a27530a77ef631c6d18f60a16062f93e820c36611c64416f8c60f1b  fix-session.sh
+dcf31388bd5ee542a2b0e75d9d292141fb73266f467aa4ffbbd344d032c3212c  fix-transport.sh
+90481a551a66ea030f5fbfd358e46efb158faee0b1a5bbfda5c8951e098ce199  fix-api-load-failed.sh
+63aa70673fc02eca7d8f37c3ba5880b25629649bd15fb764b2a7f4bb3ce54f93  fix-safari16.sh

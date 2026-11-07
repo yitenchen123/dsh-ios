@@ -1,0 +1,31 @@
+# +ios7 —— @tencent-connect/dsh-qqbot 的 Cordis patch overlay
+#
+# 这个插件是纯 Cordis 插件（inject = ['agents']），不需要改 dsh 主循环，
+# 也不需要在 iPhone 上跑 pnpm/npm/npx/git —— 依赖树已随包固化在
+# /var/jb/usr/lib/dsh/node_modules/，peer 直接复用宿主的 0.2.1-rc.5 全家桶。
+#
+# 叠加位置：$DSH_HOME/cordis.patch.yml（home 级用户层，对所有 profile 生效），
+# 由 /var/jb/usr/bin/dsh 在首次启动时自动追加；也可用
+#   dsh web --patch /var/jb/etc/dsh/qqbot.patch.yml
+# 手动叠加。__FROM_ENV__ 由插件 resolveEnv() 读 QQBOT_APPID / QQBOT_SECRET。
+#
+# A11 / 3GB 取舍：关掉富媒体下载与视觉理解，避免图片消息触发大文件下载把
+# jetsam 引来；其余保持官方默认。想开可以把 media.enabled 改回 true。
+
+- insert:
+    - id: im-qqbot
+      name: '@tencent-connect/dsh-qqbot'
+      config:
+        appId: __FROM_ENV__
+        appSecret: __FROM_ENV__
+        requireMention: true
+        textChunkLimit: 4500
+        sessionIdleTimeout: 1800000
+        maxQueue: 20
+        processingTimeoutMs: 1800000
+        historyLimit: 10
+        debug: false
+        media:
+          enabled: false
+        vision:
+          enabled: false
