@@ -1,9 +1,22 @@
-# +ios14 交付物 SHA-256
-# 生成时间: 2026-11-07 08:50 UTC
-# 推荐: fix-ios14.sh（4.7MB 免重传）或 +ios14 deb
-34737a0997b635c228c6388b6d64b69d4f71a83d6ad095863a4e2e6ff2d3a398  dev.airdevs.dsh_0.2.1-rc.5+ios14_iphoneos-arm64.deb
+# +ios15 交付物 SHA-256
+# 生成时间: 2026-11-10 15:53 UTC
+# 版本: dsh 0.2.1-rc.5（保持稳定底座，不升级）/ Node 22.12.0 / +ios15
+# 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
+#       （两次完整构建 SHA 完全一致，见下方 deb 行）
+# 独立核验: sh verify-deb.sh  （从交付 deb 自解包，57 项断言，无需 iOS 真机）
+# 一键校验: cd dist && sha256sum -c SHA256SUMS.txt
+#           （下方两个大文件在 ../bundles/，全新 clone 后先跑 sh bootstrap.sh 下载）
+# 推荐: fix-ios15.sh（4.9MB 免重传已装 +ios14 的设备）或 +ios15 deb（全新安装）
+67d54667ce3ebc7734151ec621f6ec118a9d760e36d1c48922eb644d79528d70  dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb
+4ff34b64ff7f9cba88c6957edbae217e0040bcf75a8a98bcde3de3b06dc3704f  fix-ios15.sh
+
+# --- 历史热修（保留供旧设备就地修复/回滚）---
 40de70df194183f77f6796a3bc942e3573d39f001b0e874fece61d269bdb9d13  fix-ios14.sh
 4e8d6d094a27530a77ef631c6d18f60a16062f93e820c36611c64416f8c60f1b  fix-session.sh
 dcf31388bd5ee542a2b0e75d9d292141fb73266f467aa4ffbbd344d032c3212c  fix-transport.sh
 90481a551a66ea030f5fbfd358e46efb158faee0b1a5bbfda5c8951e098ce199  fix-api-load-failed.sh
 63aa70673fc02eca7d8f37c3ba5880b25629649bd15fb764b2a7f4bb3ce54f93  fix-safari16.sh
+
+# --- bootstrap.sh 下载的大文件校验值（路径相对 dist/，文件在 ../bundles/）---
+f091585d9e3d63b2d8be1fadc17068a21d42d6b2912304462b8dca41a8cfc163  ../bundles/node-v22.12.0-iphoneos-arm64
+b69675d9a8ac51a844051c24a3132d05bdd57d015ca2cd4bf9e815a04174c55c  ../bundles/dsh-nodemodules-0.2.1-rc.5+ios1.tar.gz

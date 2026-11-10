@@ -1,6 +1,6 @@
 Package: dev.airdevs.dsh
 Name: DSH CLI (DeepSeek Harness)
-Version: 0.2.1-rc.5+ios14
+Version: 0.2.1-rc.5+ios15
 Section: Terminal Support
 Priority: optional
 Architecture: iphoneos-arm64
@@ -126,4 +126,37 @@ Description: DeepSeek Harness CLI for rootless jailbroken iOS (A11 compatible)
  *.jsonl, and transfers root-owned trees to mobile when run as
  root. dsh-doctor check 20 really creates a deep session file.
  All fixes ship in sh fix-ios14.sh (no 125MB re-transfer).
+ +ios15 fixes the Web UI plugin install page and the plugin market on a
+ real iPhone X. (1) "All manual install methods in the Install Plugin
+ dialog fail, while AI-assisted install succeeds": the service artifact
+ checkGithubConnection() spawned a bare `git ls-remote` for git/GitHub
+ specs; iOS has no git binary, so the optional reachability probe died
+ with ENOENT and aborted installBundle. AI-assisted install rewrites the
+ repo address to an npm name/tarball and never hits the probe. +ios15
+ short-circuits that optional probe (pnpm downloads via codeload HTTP).
+ (2) "Plugin Market fails to load with a pile of errors": fetchIndex used
+ redirect:"error" so any CDN/http->https redirect threw, and
+ parseIndexInWorker spawned a Worker with execArgv:[] which re-enabled
+ V8 JIT on a background thread -> SIGBUS on A11 in the zero-JIT tier.
+ +ios15 switches to redirect:"follow" and parses the index on the main
+ thread via a byte-identical derivative of the official worker.cjs.
+ (3) Web UI manual install now transforms ecosystem-plugin specs before
+ submit: GitHub/git addresses become pnpm hosted-git shorthands, and
+ iOS/Safari-incompatible plugins (native addons, Electron, Playwright,
+ Node>=24) get a clear hint + alternative (never hard-blocked). This
+ transform is injected ONLY into the Web UI manual-install client.js;
+ the AI tool (tools.js) and CLI (operations.js) are untouched, so
+ AI-assisted install never applies it. GitHub /tree/<branch> refs
+ containing slashes (e.g. tree/release/v2) are handled; 32 spec
+ transform cases are regression-tested. Safari 16.6 polyfill extended
+ with Promise.try/RegExp.escape/toSorted/Uint8Array base64-hex/etc.
+ All fixes ship in sh fix-ios15.sh (no 125MB re-transfer); dsh-doctor
+ gains checks 23-26. Build is byte-reproducible: sh bootstrap.sh pulls
+ the two >100MB assets from Releases with SHA-256 checks, then sh
+ build.sh fixes mtimes and uses SOURCE_DATE_EPOCH; verify-repro.sh
+ proves two builds are identical and verify-deb.sh independently
+ un-packs the shipped .deb and asserts all 57 landing conditions.
+ Version upgrade deliberately deferred: no iOS arm64 Node >=24.9.0
+ that is as reliable as the bundled 22.12.0 exists (see
+ docs/DSH-NODE-UPGRADE-EVALUATION.md); stays on dsh 0.2.1-rc.5.
 Homepage: https://github.com/deepseek-ai/deepseek-harness

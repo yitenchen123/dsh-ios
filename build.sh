@@ -1,9 +1,11 @@
 #!/bin/sh
 # build.sh —— 在 Linux/macOS 上组装 rootless .deb（iphoneos-arm64）
 #
-# 产物: dist/dev.airdevs.dsh_0.2.1-rc.5+ios14_iphoneos-arm64.deb
-# 需求: python3, dpkg-deb, sha256sum；node/npm 仅「无离线 bundle 时」回退用
+# 产物: dist/dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb
+# 需求: python3, dpkg-deb, sha256sum；node 仅用于构建期补丁脚本/语法自检
 # 注意: 只在构建机跑，不在 iPhone 上跑；二进制与依赖树均随包固化，全程离线。
+# 可复现: 所有 stage 文件固定 mtime + SOURCE_DATE_EPOCH，dpkg-deb -Zgzip -z9，
+#         连续构建 SHA-256 完全一致（见 verify-repro.sh）。
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -23,12 +25,24 @@ DST="$ROOT/dist"
 # 压缩方式：默认 gzip（原大小，兼容性最好）；DEB_COMP=xz 可显著减小体积
 COMP="${DEB_COMP:-gzip}"
 case "$COMP" in
-    xz) ZARGS="-Zxz -z9";  SUF="+ios14xz" ;;
-    *)  ZARGS="-Zgzip -z9"; SUF="+ios14" ;;
+    xz) ZARGS="-Zxz -z9";  SUF="+ios15xz" ;;
+    *)  ZARGS="-Zgzip -z9"; SUF="+ios15" ;;
 esac
 OUT="$DST/dev.airdevs.dsh_${DSH_VER}${SUF}_iphoneos-arm64.deb"
 
 for c in python3 dpkg-deb sha256sum; do command -v "$c" >/dev/null 2>&1 || { echo "缺少 $c" >&2; exit 1; }; done
+
+# --- 0. 可复现构建前置：GitHub clone 后缺的大二进制自动 bootstrap ---
+# 仓库 .gitignore 排除了 node 二进制 / 依赖树 bundle（超 GitHub 单文件限制），
+# 它们作为 Release 附件公开。缺任一文件就自动下载 + SHA-256 校验，保证任何
+# clone 都能 1:1 重建出与本地字节一致的 deb。DSH_SKIP_BOOTSTRAP=1 可跳过。
+NEED_BOOTSTRAP=0
+[ -f "$ROOT/bundles/node-v${NODE_VER}-iphoneos-arm64" ] || NEED_BOOTSTRAP=1
+[ -f "$ROOT/bundles/dsh-nodemodules-${DSH_VER}+ios1.tar.gz" ] || NEED_BOOTSTRAP=1
+if [ "$NEED_BOOTSTRAP" -eq 1 ] && [ "${DSH_SKIP_BOOTSTRAP:-0}" != "1" ]; then
+    echo "==> 缺构建大文件，自动运行 bootstrap.sh（从 Release 下载并校验）"
+    sh "$ROOT/bootstrap.sh" || exit 1
+fi
 
 echo "==> 清理 workspace"
 rm -rf "$WORK"; mkdir -p "$WORK/npm" "$STAGE/var/jb/usr/bin" "$STAGE/var/jb/usr/lib/dsh/bin" "$STAGE/var/jb/etc/dsh" "$DST"
@@ -107,6 +121,28 @@ node "$ROOT/shims/apply_pnpm_abs_patch.cjs" "$PM" || exit 1
 node --check "$PM/index.js" || { echo "补丁后 index.js 语法错误" >&2; exit 1; }
 node --check "$PM/types/operations.js" || { echo "补丁后 operations.js 语法错误" >&2; exit 1; }
 
+# --- 3a2. +ios15 手动安装 / 插件市场全链路修复（构建期应用，幂等） ---
+# 修三处真机故障：GitHub 仓库手动安装的裸 execa("git") 预检、插件市场的
+# 子 Worker(SIGBUS) + redirect:"error"、以及 Web UI 手动安装 spec 转化钩子。
+# 断言式补丁：任一模式未精确命中就中止，绝不打出未经验证的包。
+echo "==> 应用 +ios15 插件安装 / 插件市场修复补丁"
+node "$ROOT/shims/apply_plugin_install_patch.cjs" "$NM" || exit 1
+for f in "@deepseek-ai/dsh-plugin-manager/lib/index.js" \
+         "@deepseek-ai/dsh-plugin-market/lib/index.js" \
+         "@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs" \
+         "@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js"; do
+    node --check "$NM/$f" || { echo "补丁后 $f 语法错误" >&2; exit 1; }
+done
+grep -q 'dsh-ios +ios15' "$NM/@deepseek-ai/dsh-plugin-manager/lib/index.js" || \
+    { echo "构建中止：git 预检短路未生效" >&2; exit 1; }
+grep -q 'redirect: "follow"' "$NM/@deepseek-ai/dsh-plugin-market/lib/index.js" || \
+    { echo "构建中止：插件市场 redirect follow 未生效" >&2; exit 1; }
+[ -f "$NM/@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs" ] || \
+    { echo "构建中止：worker-parse.cjs 未派生" >&2; exit 1; }
+grep -q '__dshIosTransformSpec' "$NM/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js" || \
+    { echo "构建中止：手动安装转化钩子未注入" >&2; exit 1; }
+echo "    +ios15 校验: git 预检短路 / 市场主线程解析 / redirect follow / 手动转化钩子 通过"
+
 echo "    剩余 .node: $(find "$NM" -name '*.node' | wc -l)  体积: $(du -sh "$NM" | cut -f1)"
 [ "$(find "$NM" -name '*.node' | wc -l)" -eq 0 ] || { echo "依赖树里仍有 .node，构建中止" >&2; exit 1; }
 cp -a "$NM" "$STAGE/var/jb/usr/lib/dsh/node_modules"
@@ -135,10 +171,20 @@ echo "    内置 pnpm: $(du -sh "$PNPMSRC" | cut -f1) / 0 个 .node（插件不�
 # 运行时动态加载的插件 client.js 会调用它们，在手机 Safari 里直接抛
 # "AbortSignal.any is not a function"。这是浏览器侧问题，与后端 node 无关。
 # 垫片采用「特性检测 + 原生优先」，iPhone 17 / iOS 17.4+ 上完全不动。
-echo "==> 注入 Safari 16.7 前端兼容垫片 (+ios4)"
-python3 "$ROOT/shims/inject_safari16.py" \
-    "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist" \
-    "$ROOT/shims/safari16-polyfill.js" || exit 1
+echo "==> 注入 Safari 16.7 前端兼容垫片 (+ios4) + 手动安装转化逻辑 (+ios15)"
+FRONT="$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist"
+# 构建期/设备端热修/doctor 自愈共用同一个注入实现（apply_frontend_inject.cjs）
+node "$ROOT/shims/apply_frontend_inject.cjs" \
+    "$FRONT" \
+    "$ROOT/shims/safari16-polyfill.js" \
+    "$ROOT/shims/dsh-ios-manual-install-transform.js" || exit 1
+# 构建期强校验：两个引用都在 <head>、module 之前，且语法可加载
+for m in 'safari16-polyfill.js' 'dsh-ios-manual-install-transform.js'; do
+    grep -q "$m" "$FRONT/index.html" || { echo "构建中止：index.html 缺 $m 引用" >&2; exit 1; }
+    [ -f "$FRONT/assets/$m" ] || { echo "构建中止：缺 assets/$m" >&2; exit 1; }
+    node --check "$FRONT/assets/$m" || { echo "构建中止：assets/$m 语法错误" >&2; exit 1; }
+done
+echo "    +ios15 校验: 前端垫片 + 转化逻辑已注入并通过语法检查"
 
 # --- 5. entitlements / shim 说明 / 启动脚本 / 配置 ---
 cp "$ROOT/ent.plist" "$STAGE/var/jb/usr/lib/dsh/ent.plist"
@@ -323,22 +369,27 @@ if ! grep -q 'const DEFAULT_COMPRESSION = "none";' "$PJ"; then
     echo "构建中止：会话默认压缩不是 none，+ios8 修复未生效" >&2; exit 1
 fi
 echo "    +ios8 会话修复: 默认压缩 none，构建期校验通过"
-# --- 5e. +ios14 自愈/兼容脚本、设备端热修、启动链路强校验 ---
-for f in dsh-home-heal.cjs dsh-plugin-compat.cjs apply_pnpm_abs_patch.cjs; do
+# --- 5e. +ios15 自愈/兼容/补丁脚本、设备端热修、启动链路强校验 ---
+for f in dsh-home-heal.cjs dsh-plugin-compat.cjs apply_pnpm_abs_patch.cjs \
+         apply_plugin_install_patch.cjs apply_frontend_inject.cjs \
+         safari16-polyfill.js dsh-ios-manual-install-transform.js; do
     SRC="$ROOT/shims/$f"
     [ -f "$SRC" ] || { echo "缺少 shims/$f" >&2; exit 1; }
     cp "$SRC" "$STAGE/var/jb/usr/lib/dsh/$f"
     chmod 644 "$STAGE/var/jb/usr/lib/dsh/$f"
     node --check "$STAGE/var/jb/usr/lib/dsh/$f" || { echo "$f 语法错误" >&2; exit 1; }
 done
-# 热修包每次构建从 payload + bundles/pnpm 重新生成，内嵌文件与 deb 字节一致
-python3 "$ROOT/shims/make_fix_ios14.py" "$ROOT" || { echo "生成 fix-ios14.sh 失败" >&2; exit 1; }
-cp "$ROOT/dist/fix-ios14.sh" "$STAGE/var/jb/usr/lib/dsh/fix-ios14.sh"
-chmod 755 "$STAGE/var/jb/usr/lib/dsh/fix-ios14.sh"
-sh -n "$STAGE/var/jb/usr/lib/dsh/fix-ios14.sh" || { echo "fix-ios14.sh 语法错误" >&2; exit 1; }
+# 热修包每次构建从 payload + shims + 已注入的前端 dist + bundles/pnpm 重新生成，
+# 内嵌文件与 deb 内对应文件字节一致
+python3 "$ROOT/shims/make_fix_ios15.py" "$ROOT" \
+    "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist" \
+    || { echo "生成 fix-ios15.sh 失败" >&2; exit 1; }
+cp "$ROOT/dist/fix-ios15.sh" "$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh"
+chmod 755 "$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh"
+sh -n "$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh" || { echo "fix-ios15.sh 语法错误" >&2; exit 1; }
 
 # 启动链路必须带 sqlite 开关（漏一处就重演 +ios9 整包 import 失败）
-for f in tier.sh fix-session.sh fix-ios14.sh; do
+for f in tier.sh fix-session.sh fix-ios15.sh; do
     P="$STAGE/var/jb/usr/lib/dsh/$f"
     grep -q -- '--experimental-sqlite' "$P" || \
         { echo "构建中止：$P 缺 --experimental-sqlite" >&2; exit 1; }
@@ -372,16 +423,17 @@ for f in index.js types/operations.js; do
 done
 grep -q -- '--jitless' "$STAGE/var/jb/usr/bin/pnpm" || \
     { echo "构建中止：pnpm wrapper 缺零 JIT 档参数" >&2; exit 1; }
-FIXSH="$STAGE/var/jb/usr/lib/dsh/fix-ios14.sh"
-for m in 'dsh-home-heal.cjs' 'apply_pnpm_abs_patch.cjs' 'dsh-ios +ios14'; do
-    grep -q "$m" "$FIXSH" || { echo "构建中止：fix-ios14.sh 缺 $m" >&2; exit 1; }
+FIXSH="$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh"
+for m in 'dsh-home-heal.cjs' 'apply_pnpm_abs_patch.cjs' 'apply_plugin_install_patch.cjs' \
+         'dsh-ios +ios14' 'dsh-ios +ios15' 'dsh-ios-manual-install-transform.js'; do
+    grep -q "$m" "$FIXSH" || { echo "构建中止：fix-ios15.sh 缺 $m" >&2; exit 1; }
 done
 # 源码级标记在压缩 base64 里搜不到，必须真解出内嵌 tar 再校验。
 VT=$(mktemp -d) || exit 1
 python3 - "$FIXSH" "$VT/pack.tar" <<'PY' || { echo "构建中止：无法解出热修内嵌 tar" >&2; rm -rf "$VT"; exit 1; }
 import sys, re, base64, gzip
 s = open(sys.argv[1], encoding='utf-8').read()
-m = re.search(r"<<'DSH_IOS14_B64'\n([\s\S]*?)\nDSH_IOS14_B64", s)
+m = re.search(r"<<'DSH_IOS15_B64'\n([\s\S]*?)\nDSH_IOS15_B64", s)
 if not m: sys.exit(2)
 open(sys.argv[2], 'wb').write(gzip.decompress(base64.b64decode(re.sub(r'\s', '', m.group(1)))))
 PY
@@ -390,8 +442,21 @@ tar xf "$VT/pack.tar" -C "$VT" 2>/dev/null || \
 grep -q 'healHomeBySwap'   "$VT/lib/dsh-home-heal.cjs"        || { echo "构建中止：热修内嵌 heal 缺 HOME 自愈" >&2; rm -rf "$VT"; exit 1; }
 grep -q 'healSessionFiles' "$VT/lib/dsh-home-heal.cjs"        || { echo "构建中止：热修内嵌 heal 缺会话文件兜底" >&2; rm -rf "$VT"; exit 1; }
 grep -q '__dshPnpmFlags'   "$VT/lib/apply_pnpm_abs_patch.cjs" || { echo "构建中止：热修内嵌补丁缺零 JIT 档" >&2; rm -rf "$VT"; exit 1; }
+grep -q 'git-probe-shortcircuit' "$VT/lib/apply_plugin_install_patch.cjs" || { echo "构建中止：热修内嵌 +ios15 补丁缺 git 预检短路" >&2; rm -rf "$VT"; exit 1; }
+grep -q '__dshIosTransformSpec' "$VT/web/assets/dsh-ios-manual-install-transform.js" || { echo "构建中止：热修内嵌前端缺转化逻辑" >&2; rm -rf "$VT"; exit 1; }
+# 内嵌文件与 deb 内对应文件逐字节比对（cmp），防止热修覆盖出的文件与整包不一致
+for f in safari16-polyfill.js dsh-ios-manual-install-transform.js \
+         apply_plugin_install_patch.cjs apply_frontend_inject.cjs; do
+    cmp -s "$VT/lib/$f" "$STAGE/var/jb/usr/lib/dsh/$f" || \
+        { echo "构建中止：热修内嵌 lib/$f 与 deb 不一致" >&2; rm -rf "$VT"; exit 1; }
+done
+FRONT="$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist"
+for f in index.html assets/safari16-polyfill.js assets/dsh-ios-manual-install-transform.js; do
+    cmp -s "$VT/web/$f" "$FRONT/$f" || \
+        { echo "构建中止：热修内嵌 web/$f 与 deb 不一致" >&2; rm -rf "$VT"; exit 1; }
+done
 rm -rf "$VT"
-echo "    +ios14 校验: HOME 自愈 / 会话文件兜底 / patch 顶层数组 / pnpm 绝对路径+零 JIT / 热修内嵌源码 通过"
+echo "    +ios15 校验: HOME 自愈 / 会话兜底 / patch 数组 / pnpm 零 JIT / +ios15 补丁 / 前端注入 / 热修内嵌逐字节一致 通过"
 # node 只用于构建期语法自检，构建机没有 node 时跳过（不引入额外依赖）。
 if command -v node >/dev/null 2>&1; then
     node --check "$STAGE/var/jb/usr/lib/dsh/smoke.js" || { echo "smoke.js 语法错误" >&2; exit 1; }
@@ -412,9 +477,22 @@ chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 # 预签会覆盖掉它、还会改动字节（破坏上面的 size/SHA 校验与可复现性），所以这里
 # 原样保留。设备端 postinst 也只在 entitlement 确实缺失时才兜底补签。
 
-# --- 8. 打包 ---
-echo "==> dpkg-deb 组装（压缩: $COMP）"
-dpkg-deb -b $ZARGS "$STAGE" "$OUT"
+# --- 8. 打包（字节级可复现） ---
+# dpkg-deb 会把 stage 内文件的 mtime/uid/gid/排序写进 tar 与 control.tar；
+# 不同 clone 时间、不同 umask 会导致 deb SHA 变化。这里统一：
+#   * 所有 stage 文件/目录/链接 mtime 固定到 SOURCE_DATE_EPOCH
+#   * 属主统一 0:0（dpkg 安装时按 postinst/包管理还原，iOS rootless 下都是 root）
+#   * dpkg-deb 用固定的 gzip -z9，且 SOURCE_DATE_EPOCH 让 control 时间戳确定
+# 实测连续构建 SHA-256 完全一致；verify-repro.sh 会真跑两次比对。
+SDE="${SOURCE_DATE_EPOCH:-1700000000}"
+echo "==> 固定 stage 时间戳 / 属主（SOURCE_DATE_EPOCH=$SDE）"
+# -h 处理符号链接本身；先目录后文件，避免改父目录 mtime 影响子项写入
+chown -R 0:0 "$STAGE" 2>/dev/null || true
+find "$STAGE" -depth -exec touch -h -d "@$SDE" {} + 2>/dev/null || \
+    find "$STAGE" -depth -exec touch -h -t "$(date -u -r "$SDE" +%Y%m%d%H%M.%S 2>/dev/null || echo 202311142013.20)" {} + 2>/dev/null || true
+echo "==> dpkg-deb 组装（压缩: $COMP，可复现）"
+SOURCE_DATE_EPOCH="$SDE" dpkg-deb -b $ZARGS "$STAGE" "$OUT"
 echo
 echo "完成: $OUT"
 echo "大小: $(du -sh "$OUT" | cut -f1)"
+echo "SHA-256: $(sha256sum "$OUT" | cut -d' ' -f1)"

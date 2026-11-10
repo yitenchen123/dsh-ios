@@ -3,9 +3,71 @@
 **做成 rootless 越狱包（.deb），装完在终端敲 `dsh` 直接启动。** 不走 Air2，不需要 WKWebView，不需要 iSH 模拟器，不需要 TrollStore，不装系统 node。
 
 > 目标机：iPhone X (iPhone10,3), A11 **arm64**, iOS **16.7.15**, Dopamine 3.0 rootless (`/var/jb`)。
-> 当前版本 **`+ios12`**：回退预装插件路线，改为干净底座 + 内置纯 JS pnpm 让官方 `dsh plugin add` 可用；根治「无法创建新对话」EACCES；此前 11 轮修复全部保留并回归。内置 node 仍是 `+ios2` 的 iPhone X / A11 实测版 v22.12.0。详见下方「最新修复」。
+> 当前版本 **`+ios15`**：修好「点击插件 → 安装插件」里所有手动方式（AI 帮你装本来就成功）、修好「插件市场加载失败一堆报错」、给生态插件加仅手动安装生效的转化逻辑、并让 GitHub 仓库可 1:1 字节级复现构建。dsh 版本保持 **0.2.1-rc.5**、内置 node 保持 **22.12.0**（A11 唯一 100% 能跑的组合）。最后阶段的「新 Node / 最新版 DSH」评估**已完成**：查无「和 22.12.0 一样 100% 能用、又原生适配最新版 DSH」的 iOS arm64 Node，维持现底座不升级，详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。此前 14 轮修复全部保留并回归。
 
 ---
+
+## 最新修复 · `+ios15`：手动安装全方式 / 插件市场 / 生态插件转化 / 可复现构建
+
+这一版把用户反馈的四件事一次性收口，**不升级 dsh 版本、不换 node 二进制**（避免已装插件的版本豁免失效、也免重传额外部件）。
+
+### 1. 修好「点击插件 → 安装插件」里【所有手动安装方式】
+
+真机现象：手动装 npm 包名 / GitHub 仓库 / tarball / 本地路径全失败，其中 GitHub 仓库「不再是 127、有别的新报错」；而**「AI 帮你装」成功**。
+
+根因（0.2.1-rc.5 真机逐行核对）：Web UI 手动安装与 AI 装最终都走 service 产物 `dsh-plugin-manager/lib/index.js` 的 `installBundle()`，但 `installBundle` 在真正下载前会跑 `checkGithubConnection()`，对 git/GitHub spec **裸调 `execa("git", ["ls-remote", ...])`**。iOS rootless 没有 git 二进制 → ENOENT 被判成 `network` → 直接 `throw` 中止安装。AI 装会把仓库地址智能转成 npm 包名/tarball（`spec.kind != "git"`），不触发这个预检，所以成功。这个预检只是「提前给个更好看的报错」，真正的下载由包内纯 JS pnpm 走 codeload HTTP tarball，根本不需要本地 git。
+
+修法：`apply_plugin_install_patch.cjs` 在 iOS 上短路这个**可选**预检（保留环境变量 `DSH_IOS_KEEP_GIT_PROBE=1` 给装了 git 的环境）。不改变安装结果，只去掉那条必然失败的提前探测。
+
+### 2. 修好「插件市场点进去直接加载失败、一堆报错」
+
+根因两条：
+- `fetchIndex()` 用 `fetch(url, {redirect:"error"})`，而目录站 / CDN / `http→https` 必然跳转 → fetch-shim 直接抛 `Request redirected`；
+- `parseIndexInWorker()` 用 `new Worker(entry, {execArgv: []})` 起子线程解析索引。在 A11 的 nowasm 零 JIT 主进程下，这个新 Worker 会**重新启用 V8 JIT**，按线程生效的 `pthread_jit_write_protect_np` 让 V8 写可执行页即 **SIGBUS**（x86 Linux 复现不了，真机 A11 必崩）。
+
+修法：`redirect:"error"` → `follow`；索引解析从子 Worker 改到**主线程**，复用官方 `worker.cjs` 里逐字同源的 `parseIndexBody`（派生出 `worker-parse.cjs`）。彻底不 `new Worker`，从原理上杜绝 SIGBUS，返回值结构与官方完全一致。
+
+### 3. 生态插件转化逻辑（★ 只在手动安装生效，AI 帮你装绝不应用）
+
+`shims/dsh-ios-manual-install-transform.js` 定义 `window.__dshIosTransformSpec(spec)`，由 `apply_plugin_install_patch.cjs` **只**注入到 Web UI 手动安装对话框专属的 `dsh-client-ui-plugin-manager/lib/client.js` 的 `installBundle(spec)` 提交点之前。
+
+- GitHub 仓库地址 / `git@` / `git+https` → pnpm hosted-git 简写 `github:owner/repo`（pnpm 走 codeload HTTP，无需 git）。含 `/tree/<branch>` 的分支名支持斜杠，例如 `.../tree/release/v2` → `github:foo/bar#release/v2`；
+- 已知 iOS/浏览器不兼容插件（原生 `.node`、Electron、Playwright、桌面专属、要求 Node≥24）→ 前端明确提示 + 替代建议，**不硬拦**；
+- npm 包名 / tarball / 本地路径 / 已合规的 `github:` 简写 → 原样放行。
+
+交付前有 32 条转化用例回归（含带斜杠分支、尾斜杠、`#tag` 优先、`git+ssh`、tarball 原样放行、不兼容只提示不拦截），见 `sh verify-deb.sh` 的 G 段。
+
+**硬约束**：AI 帮你装走 `tools.js`（agent tool）、命令行走 `types/operations.js`，都不经过这份前端 client.js。构建期强校验 `grep -c __dshIosTransformSpec` 在这两个文件里必须为 **0**（doctor 第 25 项也会真查）。同时扩展 Safari 16.6 垫片，补齐生态插件可能用到的 `Promise.try` / `RegExp.escape` / `toSorted` / `Uint8Array` base64-hex / `Float16Array` 等（特性检测+原生优先，新设备零影响）。全量生态清单见 [`docs/DSH-ECOSYSTEM-PLUGINS.md`](docs/DSH-ECOSYSTEM-PLUGINS.md)。
+
+### 4. GitHub 仓库 1:1 字节级可复现构建
+
+用户要求「不管多大 GitHub 仓库，别人写构建脚本都构建出来，要和你本地一样」。仓库 `.gitignore` 排除了三个超 GitHub 单文件限制的大件（node 二进制 101MB、依赖树 bundle 88MB、deb 125MB），以前 clone 后 `build.sh` 第一步就失败。现在：
+
+```sh
+git clone https://github.com/yitenchen123/dsh-ios && cd dsh-ios
+sh bootstrap.sh        # 从 Releases 下载 2 个大文件，逐个 SHA-256 硬校验放回 bundles/
+sh build.sh            # 缺大文件会自动调用 bootstrap；全程离线，字节级可复现
+sh verify-repro.sh     # 连跑两次 build 并比对 SHA，证明两次产物完全一致
+sh verify-deb.sh       # 从交付 deb 自解包做 57 项独立断言（无需 iOS 真机）
+```
+
+可复现的关键：`build.sh` 把所有 stage 文件 mtime/属主固定到 `SOURCE_DATE_EPOCH`（默认 1700000000）、`dpkg-deb -Zgzip -z9`；`bundles/pnpm` 与全部补丁/热修/前端注入都随 git 跟踪且确定性生成（tar 成员排序、gzip mtime=0）。`fix-ios15.sh` 内嵌文件与 deb 内对应文件**逐字节比对**通过才允许出包。
+
+**实测结果**（2026-11-10）：`verify-repro.sh` 两次完整构建 SHA-256 完全一致 = `67d54667ce3ebc7734151ec621f6ec118a9d760e36d1c48922eb644d79528d70`；`verify-deb.sh` 从该 deb 自解包跑 **57 项断言全部通过、0 失败**（git 预检短路 / 市场主线程解析 / redirect follow / 仅手动安装注入且 AI·CLI 零泄漏 / 前端注入顺序 / 语法 / 32 条转化用例 / 历史回归 / 热修逐字节一致）。此外用 `+ios14` deb 模拟「已装旧版设备」跑 `fix-ios15.sh install` 就地升级成功，`--status` 全绿、`--restore` 可回滚，升级后的 21 个热修覆盖文件与全新 `+ios15` deb **逐字节一致**（唯一不覆盖的是热修脚本自身，符合设计）。`dsh-doctor` 全 26 项中新增的 23~26 项全部 `[ OK ]`。
+
+### 5. 装到手机（免重传 125MB deb）
+
+```sh
+# 已装 +ios14 的设备：传 4.9MB 热修脚本就地升级
+scp dist/fix-ios15.sh mobile@<iphone-ip>:/var/mobile/
+ssh mobile@<iphone-ip> 'cd /var/mobile && sudo sh fix-ios15.sh && dsh-doctor'
+sh fix-ios15.sh --status     # 只看状态
+sh fix-ios15.sh --restore    # 回滚启动文件（用户数据不动）
+```
+
+`dsh-doctor` 新增 **23~26 项**：git 预检短路 / 插件市场主线程解析 / 手动转化钩子（并核验不泄漏到 AI 路径）/ 扩展垫片语法，缺任一项都会尝试就地自愈再复检。
+
+> 关于「更新 DSH 到最新版」（**最后阶段评估已完成**）：官方 `0.2.2-rc.1` 的 `engines.node >= 24.9.0`（且依赖 `import.meta.main`，Node 24.0 都不够），而 A11 上 100% 能用的只有包内 22.12.0。打兼容补丁后 0.2.2-rc.1 在 22.12.0 上 `--version` / `web` 真监听 / `headless` 真 boot 全通，但那属于"靠 shim 绕过"而非原生适配，不满足用户的硬条件，且会让已装插件 `runtimeVersion` 豁免失效、需重传整包。公开可得的 iOS arm64 Node 最高只到**经真机验证的 Node 22.x**（且验证机型是 A9 / iOS 15.8.5，非本项目 A11 / iOS 16.7.15）；**Node 24.9.0 的 iOS 可执行文件不存在**。结论：**维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15` 不升级**。完整判据、候选对照表与"未来什么条件下才升"的 5 条门槛见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。
 
 ---
 
@@ -509,8 +571,8 @@ sh fix-safari16.sh           # 就地补垫片，幂等，几秒完成
 
 ```sh
 cd dsh-ios && sh build.sh
-# 产物：dist/dev.airdevs.dsh_0.2.1-rc.5+ios12_iphoneos-arm64.deb
-# node 二进制与依赖树都随包固化，不联网、不跑 npm install。
+# 产物：dist/dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb
+# node 二进制与依赖树都随包固化，不联网、不跑 npm install（缺大文件会自动跑 bootstrap.sh 下载并校验）。
 ```
 
 **2. 传到手机并装（Sileo 或 SSH）**

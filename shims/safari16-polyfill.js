@@ -142,4 +142,177 @@
       }
     });
   }
+
+  /* ======================================================================
+   * +ios15 扩展：为「DSH 第三方生态插件」（运行时动态加载的 client.js）补齐
+   * Safari 17.4+/18+ 才有的 API。真机自带前端 assets 基本不用这些，但生态
+   * 插件（含 PDF.js 打包代码、新版 UI 挂件）会用到，缺一个就整页报
+   * "xxx is not a function / is undefined"。全部特性检测 + 原生优先，
+   * 新设备一个字节都不改。纯 ES2019 语法。
+   * ====================================================================== */
+  function def(obj, key, value) {
+    if (!obj) return;
+    if (hasOwn.call(obj, key) && obj[key] !== undefined) return;
+    try { Object.defineProperty(obj, key, { configurable: true, writable: true, enumerable: false, value: value }); }
+    catch (_) { try { obj[key] = value; } catch (__) {} }
+  }
+
+  // 6. Promise.try(fn, ...args)
+  if (typeof g.Promise !== 'undefined' && typeof g.Promise.try !== 'function') {
+    def(g.Promise, 'try', function (fn) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return new g.Promise(function (res) { res(fn.apply(undefined, args)); });
+    });
+  }
+
+  // 7. RegExp.escape(str)
+  if (typeof g.RegExp !== 'undefined' && typeof g.RegExp.escape !== 'function') {
+    def(g.RegExp, 'escape', function (s) {
+      return String(s).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+    });
+  }
+
+  // 8. Symbol.dispose / Symbol.asyncDispose（using / await using 转译产物会引用）
+  if (typeof g.Symbol !== 'undefined') {
+    if (typeof g.Symbol.dispose === 'undefined') def(g.Symbol, 'dispose', g.Symbol('Symbol.dispose'));
+    if (typeof g.Symbol.asyncDispose === 'undefined') def(g.Symbol, 'asyncDispose', g.Symbol('Symbol.asyncDispose'));
+  }
+
+  // 9. Array.prototype 的 change-array-by-copy / findLast 家族
+  if (typeof g.Array !== 'undefined' && g.Array.prototype) {
+    var AP = g.Array.prototype;
+    if (typeof AP.toSorted !== 'function') def(AP, 'toSorted', function (fn) { return Array.prototype.slice.call(this).sort(fn); });
+    if (typeof AP.toReversed !== 'function') def(AP, 'toReversed', function () { return Array.prototype.slice.call(this).reverse(); });
+    if (typeof AP.toSpliced !== 'function') def(AP, 'toSpliced', function (start, del, /* ...items */) {
+      var a = Array.prototype.slice.call(this);
+      a.splice.apply(a, Array.prototype.slice.call(arguments));
+      return a;
+    });
+    if (typeof AP.with !== 'function') def(AP, 'with', function (idx, val) {
+      var a = Array.prototype.slice.call(this);
+      var i = Number(idx) < 0 ? a.length + Number(idx) : Number(idx);
+      if (i < 0 || i >= a.length) throw new RangeError('Invalid index in Array.prototype.with');
+      a[i] = val; return a;
+    });
+    if (typeof AP.findLast !== 'function') def(AP, 'findLast', function (fn, t) {
+      for (var i = this.length - 1; i >= 0; i--) if (fn.call(t, this[i], i, this)) return this[i];
+      return undefined;
+    });
+    if (typeof AP.findLastIndex !== 'function') def(AP, 'findLastIndex', function (fn, t) {
+      for (var i = this.length - 1; i >= 0; i--) if (fn.call(t, this[i], i, this)) return i;
+      return -1;
+    });
+  }
+
+  // 10. Uint8Array.prototype base64 / hex（Node 22 / Safari 18 API，浏览器常用）
+  if (typeof g.Uint8Array !== 'undefined' && g.Uint8Array.prototype) {
+    var U8 = g.Uint8Array;
+    var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    function toB64(bytes) {
+      var out = '', i;
+      for (i = 0; i < bytes.length; i += 3) {
+        var a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
+        out += B64[a >> 2];
+        out += B64[((a & 3) << 4) | ((b === undefined ? 0 : b) >> 4)];
+        out += b === undefined ? '=' : B64[((b & 15) << 2) | ((c === undefined ? 0 : c) >> 6)];
+        out += c === undefined ? '=' : B64[c & 63];
+      }
+      return out;
+    }
+    function fromB64(str) {
+      var s = String(str).replace(/[\s=]/g, ''), out = [], i;
+      for (i = 0; i < s.length; i += 4) {
+        var n0 = B64.indexOf(s[i]), n1 = B64.indexOf(s[i + 1]), n2 = B64.indexOf(s[i + 2]), n3 = B64.indexOf(s[i + 3]);
+        out.push((n0 << 2) | (n1 >> 4));
+        if (n2 >= 0) out.push(((n1 & 15) << 4) | (n2 >> 2));
+        if (n3 >= 0) out.push(((n2 & 3) << 6) | n3);
+      }
+      return new U8(out);
+    }
+    if (typeof U8.prototype.toBase64 !== 'function') def(U8.prototype, 'toBase64', function () { return toB64(this); });
+    if (typeof U8.prototype.toHex !== 'function') def(U8.prototype, 'toHex', function () {
+      var h = '0123456789abcdef', out = '';
+      for (var i = 0; i < this.length; i++) out += h[this[i] >> 4] + h[this[i] & 15];
+      return out;
+    });
+    if (typeof U8.fromBase64 !== 'function') def(U8, 'fromBase64', fromB64);
+    if (typeof U8.prototype.setFromBase64 !== 'function') def(U8.prototype, 'setFromBase64', function (str) {
+      var n = fromB64(str), i;
+      for (i = 0; i < Math.min(n.length, this.length); i++) this[i] = n[i];
+      return { read: Math.min(n.length, this.length), written: Math.min(n.length, this.length) };
+    });
+    if (typeof U8.prototype.setFromHex !== 'function') def(U8.prototype, 'setFromHex', function (str) {
+      var s = String(str), out = [], i;
+      for (i = 0; i + 1 < s.length; i += 2) out.push(parseInt(s.substr(i, 2), 16));
+      for (i = 0; i < Math.min(out.length, this.length); i++) this[i] = out[i];
+      return { read: Math.min(out.length * 2, this.length), written: Math.min(out.length, this.length) };
+    });
+    if (typeof U8.fromHex !== 'function') def(U8, 'fromHex', function (str) {
+      var s = String(str), out = [];
+      if (s.length % 2) throw new SyntaxError('Invalid hex string');
+      for (var i = 0; i < s.length; i += 2) {
+        var v = parseInt(s.substr(i, 2), 16);
+        if (isNaN(v)) throw new SyntaxError('Invalid hex string');
+        out.push(v);
+      }
+      return new U8(out);
+    });
+  }
+
+  // 11. Iterator.from / URL.canParse / ArrayBuffer.prototype.transfer
+  if (typeof g.Iterator !== 'undefined' && typeof g.Iterator.from !== 'function') {
+    def(g.Iterator, 'from', function (o) {
+      if (o && typeof o[g.Symbol.iterator] === 'function') return o[g.Symbol.iterator]();
+      return (function* () { for (var k in o) yield o[k]; })();
+    });
+  }
+  if (typeof g.URL !== 'undefined' && typeof g.URL.canParse !== 'function') {
+    def(g.URL, 'canParse', function (u, base) {
+      try { new g.URL(u, base); return true; } catch (_) { return false; }
+    });
+  }
+  if (typeof g.ArrayBuffer !== 'undefined' && g.ArrayBuffer.prototype
+      && typeof g.ArrayBuffer.prototype.transfer !== 'function') {
+    def(g.ArrayBuffer.prototype, 'transfer', function (len) {
+      var n = len === undefined ? this.byteLength : len;
+      var dst = new g.ArrayBuffer(n);
+      new g.Uint8Array(dst).set(new g.Uint8Array(this, 0, Math.min(n, this.byteLength)));
+      return dst;
+    });
+  }
+
+  // 12. Float16Array（Safari 18+；生态 PDF/数值插件可能引用）。给最小可用实现：
+  //     基于 Uint16 位模式 + DataView 半精度换算，保证「new/读写/length」不抛错。
+  if (typeof g.Float16Array === 'undefined' && typeof g.DataView !== 'undefined') {
+    function halfToFloat(h) {
+      var s = (h & 0x8000) >> 15, e = (h & 0x7C00) >> 10, f = h & 0x03FF;
+      if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+      if (e === 31) return f ? NaN : (s ? -Infinity : Infinity);
+      return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+    }
+    function floatToHalf(x) {
+      if (!isFinite(x)) return x === Infinity ? 0x7C00 : (x === -Infinity ? 0xFC00 : 0x7E00);
+      var v = Math.fround ? Math.fround(x) : x;
+      var buf = new g.ArrayBuffer(4), dv = new g.DataView(buf);
+      dv.setFloat32(0, v); var bits = dv.getUint32(0);
+      var s = (bits >> 16) & 0x8000, e = ((bits >> 23) & 0xFF) - 127 + 15, f = (bits >> 13) & 0x3FF;
+      if (e <= 0) return s | (f ? 0 : 0);
+      if (e >= 31) return s | 0x7C00;
+      return s | (e << 10) | f;
+    }
+    function F16(n) {
+      if (!(this instanceof F16)) return new F16(n);
+      var len = n && typeof n === 'object' && typeof n.length === 'number' ? n.length : (Number(n) || 0);
+      this._u = new g.Uint16Array(len);
+      this.length = len;
+      if (n && typeof n === 'object' && typeof n.length === 'number') {
+        for (var i = 0; i < len; i++) this._u[i] = floatToHalf(Number(n[i]));
+      }
+    }
+    Object.defineProperty(F16.prototype, 0, { get: function () { return halfToFloat(this._u[0]); }, set: function (v) { this._u[0] = floatToHalf(v); }, configurable: true });
+    F16.prototype[Symbol.iterator] = function* () { for (var i = 0; i < this.length; i++) yield halfToFloat(this._u[i]); };
+    F16.from = function (src) { return new F16(src); };
+    F16.of = function () { return new F16(Array.prototype.slice.call(arguments)); };
+    try { def(g, 'Float16Array', F16); } catch (_) {}
+  }
 })();

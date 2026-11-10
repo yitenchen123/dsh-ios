@@ -32,7 +32,7 @@ bad(){ printf '  [FAIL] %s\n' "$1"; printf '         -> %s\n' "$2"; FAIL=$((FAIL
 wrn(){ printf '  [WARN] %s\n' "$1"; printf '         -> %s\n' "$2"; WARN=$((WARN+1)); }
 inf(){ printf '  [INFO] %s\n' "$1"; }
 
-echo "=== dsh-doctor / iPhone X (A11, arm64) / iOS 16.7.15 / Dopamine 3.0 rootless / +ios14 ==="
+echo "=== dsh-doctor / iPhone X (A11, arm64) / iOS 16.7.15 / Dopamine 3.0 rootless / +ios15 ==="
 echo
 
 # 0) 【+ios14】启动前自愈，必须先跑。
@@ -495,7 +495,110 @@ elif [ -f "$D/apply_pnpm_abs_patch.cjs" ]; then
         bad "$PMBAD2 项缺 +ios14 补丁，dsh plugin 会 127 或 SIGBUS" "跑 sh fix-ios14.sh 或重装 +ios14 deb"
     fi
 else
-    bad "pnpm 补丁缺失，dsh plugin 会 127 或 SIGBUS" "跑 sh fix-ios14.sh 或重装 +ios14 deb"
+    bad "pnpm 补丁缺失，dsh plugin 会 127 或 SIGBUS" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+fi
+
+# =========================================================================
+# 23~26 【+ios15】Web UI 手动安装全方式 / 插件市场 / 生态插件转化
+#   真机反馈：点「插件 → 安装插件」里所有手动方式失败（AI 帮你装成功）；
+#   点「插件市场」直接加载失败一堆报错。四项的落地均由
+#   apply_plugin_install_patch.cjs（幂等、断言式）保证，缺任一即失败。
+#   每项都先尝试就地自愈（跑包内补丁脚本），再复检。
+# =========================================================================
+NM="$D/node_modules"
+PM="$NM/@deepseek-ai/dsh-plugin-manager/lib/index.js"
+MK="$NM/@deepseek-ai/dsh-plugin-market/lib/index.js"
+WP="$NM/@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs"
+CJS="$NM/@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js"
+FRONT="$NM/@deepseek-ai/dsh-web-frontend/dist"
+
+# 23 GitHub 仓库手动安装不再依赖 git（checkGithubConnection 预检短路）
+if grep -q 'dsh-ios +ios15' "$PM" 2>/dev/null && grep -q 'DSH_IOS_KEEP_GIT_PROBE' "$PM" 2>/dev/null; then
+    ok "GitHub 仓库手动安装不再因缺 git 报新错（可选预检已短路）"
+elif [ -f "$D/apply_plugin_install_patch.cjs" ]; then
+    "$NODE" "$D/apply_plugin_install_patch.cjs" "$NM" >/dev/null 2>&1 || true
+    if grep -q 'DSH_IOS_KEEP_GIT_PROBE' "$PM" 2>/dev/null; then
+        ok "git 预检短路已就地补齐（+ios15 自愈生效）"
+    else
+        bad "GitHub 仓库手动安装仍会因缺 git 中止" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+    fi
+else
+    bad "缺 apply_plugin_install_patch.cjs，GitHub 手动装会失败" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+fi
+
+# 24 插件市场：redirect follow + 主线程解析（worker-parse.cjs 存在）
+if grep -q 'redirect: "follow"' "$MK" 2>/dev/null && \
+   grep -q 'market-main-thread' "$MK" 2>/dev/null && [ -f "$WP" ]; then
+    ok "插件市场主线程解析 + redirect follow（不 SIGBUS / 不跳转即报错）"
+elif [ -f "$D/apply_plugin_install_patch.cjs" ]; then
+    "$NODE" "$D/apply_plugin_install_patch.cjs" "$NM" >/dev/null 2>&1 || true
+    if grep -q 'redirect: "follow"' "$MK" 2>/dev/null && [ -f "$WP" ]; then
+        ok "插件市场补丁已就地补齐（+ios15 自愈生效）"
+    else
+        bad "插件市场仍是旧 Worker 链路，点开会 SIGBUS / 加载失败" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+    fi
+else
+    bad "缺插件市场主线程解析模块，点插件市场会一堆报错" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+fi
+
+# 25 手动安装转化逻辑（Web UI 前端）+ 硬约束：AI 路径不含钩子
+TOOLS="$NM/@deepseek-ai/dsh-plugin-manager/lib/types/tools.js"
+OPS="$NM/@deepseek-ai/dsh-plugin-manager/lib/types/operations.js"
+if grep -q '__dshIosTransformSpec' "$CJS" 2>/dev/null && \
+   [ -f "$FRONT/assets/dsh-ios-manual-install-transform.js" ] && \
+   grep -q 'dsh-ios-manual-install-transform.js' "$FRONT/index.html" 2>/dev/null; then
+    # 硬约束：AI 装(tools.js)/CLI(operations.js) 绝不能被注入
+    LEAK=0
+    grep -q '__dshIosTransformSpec' "$TOOLS" 2>/dev/null && LEAK=$((LEAK+1))
+    grep -q '__dshIosTransformSpec' "$OPS" 2>/dev/null && LEAK=$((LEAK+1))
+    if [ "$LEAK" -eq 0 ]; then
+        ok "手动安装转化逻辑已就位，且 AI 帮你装 / CLI 路径未受影响"
+    else
+        bad "转化钩子泄漏到 AI/CLI 路径（$LEAK 处）" "重装 +ios15 deb（补丁越界）"
+    fi
+elif [ -f "$D/apply_plugin_install_patch.cjs" ]; then
+    "$NODE" "$D/apply_plugin_install_patch.cjs" "$NM" >/dev/null 2>&1 || true
+    # 前端注入同样就地补齐（与构建期/热修共用同一份实现）
+    if [ -f "$D/apply_frontend_inject.cjs" ] && \
+       [ -f "$D/safari16-polyfill.js" ] && \
+       [ -f "$D/dsh-ios-manual-install-transform.js" ]; then
+        "$NODE" "$D/apply_frontend_inject.cjs" "$FRONT" \
+            "$D/safari16-polyfill.js" "$D/dsh-ios-manual-install-transform.js" >/dev/null 2>&1 || true
+    fi
+    if grep -q '__dshIosTransformSpec' "$CJS" 2>/dev/null && \
+       [ -f "$FRONT/assets/dsh-ios-manual-install-transform.js" ] && \
+       grep -q 'dsh-ios-manual-install-transform.js' "$FRONT/index.html" 2>/dev/null; then
+        ok "手动安装转化逻辑已就地补齐（+ios15 自愈生效）"
+    else
+        bad "手动安装转化逻辑缺失（生态插件不兼容无提示）" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+    fi
+else
+    bad "缺手动安装转化逻辑" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+fi
+
+# 26 前端浏览器垫片扩展（生态插件高版本 API）+ 语法可加载
+if [ -f "$FRONT/assets/safari16-polyfill.js" ] && \
+   grep -q 'RegExp.escape' "$FRONT/assets/safari16-polyfill.js" 2>/dev/null; then
+    if "$NODE" --check "$FRONT/assets/safari16-polyfill.js" >/dev/null 2>&1 && \
+       "$NODE" --check "$FRONT/assets/dsh-ios-manual-install-transform.js" >/dev/null 2>&1; then
+        ok "Safari 16.6 扩展垫片 + 转化逻辑语法可加载（生态插件不缺 API）"
+    else
+        bad "前端垫片/转化逻辑语法错误" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+    fi
+elif [ -f "$D/apply_frontend_inject.cjs" ] && \
+     [ -f "$D/safari16-polyfill.js" ] && \
+     [ -f "$D/dsh-ios-manual-install-transform.js" ]; then
+    "$NODE" "$D/apply_frontend_inject.cjs" "$FRONT" \
+        "$D/safari16-polyfill.js" "$D/dsh-ios-manual-install-transform.js" >/dev/null 2>&1 || true
+    if [ -f "$FRONT/assets/safari16-polyfill.js" ] && \
+       grep -q 'RegExp.escape' "$FRONT/assets/safari16-polyfill.js" 2>/dev/null && \
+       "$NODE" --check "$FRONT/assets/safari16-polyfill.js" >/dev/null 2>&1; then
+        ok "Safari 16.6 扩展垫片已就地补齐（+ios15 自愈生效）"
+    else
+        bad "Safari 16.6 扩展垫片缺失（生态插件会报 is not a function）" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
+    fi
+else
+    bad "Safari 16.6 扩展垫片缺失（生态插件会报 is not a function）" "跑 sh fix-ios15.sh 或重装 +ios15 deb"
 fi
 
 echo "=== 汇总: OK=$PASS  WARN=$WARN  FAIL=$FAIL ==="
