@@ -1,0 +1,35 @@
+# dsh-ios +ios15 — iOS 手机操控接入（纯配置 bundle）
+#
+# 这是「用户手动安装的生态插件」，不进 deb、不预装、不改包内任何文件。
+# 格式取自官方模板：
+#   @deepseek-ai/dsh-agent-preset/skills/cordis-plugin-development/templates/mcp/cordis.patch.yml
+#
+# 前置：设备已装 witchan/ios-mcp 的 rootless iphoneos-arm64 deb，并在
+#       「设置 → iOS MCP」里启动了服务（默认 127.0.0.1:8090）。
+# 装好后，ios-mcp 的 46 个工具会以 mcp__ios__<tool> 出现在模型工具列表里，
+# 例如 mcp__ios__tap_screen / mcp__ios__screenshot / mcp__ios__launch_app。
+#
+# 为什么浏览器前端不用改：dsh-mcp-client 是 Host 侧插件，工具注册在
+# ctx.tools；Web UI 只负责显示工具调用与审批，能力来自后端，与前端
+# 是浏览器还是原生 App 无关。
+#
+# failOnStartupError: false —— iOS MCP 服务没开时 DSH 仍要能正常启动。
+# reconnect.maxAttempts: 30 —— 手机端服务常需要手动开，给足重连窗口。
+# url 用 127.0.0.1 回环，避免把无认证的服务暴露到局域网。
+
+- insert:
+    - id: dsh-ios-phone-control-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: ios
+        transport: streamable-http
+        url: http://127.0.0.1:8090/mcp
+        headers: {}
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false
+        maxInstructionBytes: 32768
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 30

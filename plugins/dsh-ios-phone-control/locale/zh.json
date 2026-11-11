@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "iOS 手机操控",
+    "description": "连接设备本机的 iOS MCP 服务，让 AI 能看屏幕、点击、滑动、识别文字、打开 App、读取日志。"
+  }
+}

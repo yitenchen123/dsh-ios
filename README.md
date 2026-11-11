@@ -71,6 +71,44 @@ sh fix-ios15.sh --restore    # 回滚启动文件（用户数据不动）
 
 ---
 
+## 可选扩展 · iOS 手机操控（让 AI 真·点屏幕 / 跨 App 自动化）
+
+用户问「安卓 DSH-Go 能自动滑出 App、找 B 站、刷视频总结，我们浏览器里打开的能不能」。**能，而且不用写原生代码、不用改浏览器前端、不用重打包 deb。**
+
+关键是：**前端是浏览器还是原生 App，与「能不能操控系统」无关**。电脑版 `dsh-desktop-use` 的 Web UI 也跑在浏览器里，真正干活的是 Host 侧 `ctx.tools` + 原生助手；我们的 DSH Host（Node）本来就跑在 iPhone 本机。缺的只是「原生能力通道」，现在由第三方越狱插件补上：
+
+```
+Safari Web UI（不用改）
+   ↕ 显示 / 审批
+DSH Host（/var/jb 里的 Node，已在手机里）
+   └── dsh-mcp-client（包内已内置）→ ctx.tools → mcp__ios__* 共 46 个工具
+        ↕ HTTP 127.0.0.1:8090 (MCP Streamable HTTP)
+iOS MCP（第三方 tweak：截图 / UI 树 / OCR / IOHID 触控注入 / App 管理 / syslog）
+```
+
+三步接入：
+
+```sh
+# 1) 设备：Sileo 搜 "iOS MCP" 装 rootless iphoneos-arm64 的 deb，respring，
+#    进「设置 → iOS MCP」启动服务，保持屏幕解锁 + 常亮
+sh shims/probe_ios_mcp.sh          # 在 iPhone 终端跑：探服务、探端点、给出该填的 url
+
+# 2) 本地：打出一个纯配置插件包（不进 deb、不预装）
+sh shims/make_phone_control_bundle.sh    # → dist/dsh-ios-phone-control-0.1.0.tgz
+
+# 3) DSH Web UI → 插件 → 添加插件 → 填 tgz/目录路径 → 重启 DSH
+#    验证：让 AI 调用 mcp__ios__get_device_info
+sh verify-phone-control.sh         # 本地独立验证：配置合法性 + 假 MCP server 真握手 + 零 JIT 档
+```
+
+可用工具含 `tap_screen` / `swipe_screen` / `screenshot` / `get_ui_elements` / `tap_element` / `ocr_screen`（中文）/ `launch_app` / `install_app` / `get_syslog` / `get_crash_logs` 等，完整清单与「AI 写完代码 → 自动装、打开、点 UI、看日志」的开发闭环见 [`docs/IOS-PHONE-CONTROL.md`](docs/IOS-PHONE-CONTROL.md)。
+
+**边界与风险（务必看）**：`iOS MCP` 是第三方 MIT/AS IS 越狱 deb，本仓库不分发、不打包、不预装；它的 deb 在 **A11 / iOS 16.7.15 / Dopamine 3.0 rootless** 上的实装、respring、私有 entitlement 与 HID 注入**必须在真机验证**，x86 沙箱代跑不了。服务**无内置认证**且 `run_command` 可执行任意 shell，本插件把 URL 锁在 `127.0.0.1` 回环，用完记得在设置里关服务；锁屏时交互类工具会被服务端拦截。
+
+协议兼容已本地核实：`@modelcontextprotocol/client` 2.2.0 与 `ios-mcp` 默认协议同为 `2025-11-25`，`dsh-mcp-client` 支持 `streamable-http`。此扩展**不改 `+ios15` 已发布的 deb**（`SHA256SUMS.txt` 不变），也不碰 AI 帮你装 / CLI 路径。
+
+---
+
 ## 最新修复 · `+ios12`：干净底座 + 修好安装插件 + 根治「无法创建新对话」
 
 这一版把用户反馈的问题一次性收口，并**回退整条「预装插件」路线**。
@@ -724,8 +762,11 @@ git 里提交的是**全部源码、构建脚本、补丁脚本、设备端热�
 | `build.sh`、`device-check.sh`、`ent.plist` | deb 构建、设备预检、entitlements |
 | `DEBIAN/` | control / postinst / prerm |
 | `payload/` | 设备端 `dsh` 包装器、`dsh-doctor`、`pnpm`、`dsh-compat`、`tier.sh`、环境模板 |
-| `shims/` | Node 22.12 兼容补丁、零 JIT / WASM 补丁、自愈脚本、热修生成器 |
+| `shims/` | Node 22.12 兼容补丁、零 JIT / WASM 补丁、自愈脚本、热修生成器、手机操控探测与插件打包脚本 |
 | `bundles/pnpm/` | 内置纯 JS pnpm 10.28.2（构建必需，19MB） |
+| `plugins/dsh-ios-phone-control/`、`dist/dsh-ios-phone-control-0.1.0.tgz` | 可选的 iOS 手机操控纯配置插件（**不进 deb、不预装**，用户手动安装） |
+| `verify-deb.sh`、`verify-repro.sh`、`verify-phone-control.sh` | 交付 deb 独立核验 / 字节级可复现 / 手机操控接入验证（含假 MCP server 真握手） |
+| `docs/` | 生态插件清单、Node 升级评估、iOS 手机操控接入方案 |
 | `dist/*.sh`、`dist/legacy/`、`dist/SHA256SUMS.txt` | 各版本设备端热修、安装脚本与校验清单 |
 
 以下**故意不入 git**（见 `.gitignore`）：

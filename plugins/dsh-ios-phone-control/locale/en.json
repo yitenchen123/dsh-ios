@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "iOS Phone Control",
+    "description": "Connects the on-device iOS MCP server so the agent can see the screen, tap, swipe, read text, launch apps and read logs."
+  }
+}
