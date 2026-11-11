@@ -21,15 +21,36 @@
 
 这是本方案的关键，也直接回答「我们的是浏览器中打开的，可以做到吗」。
 
-以电脑版 `dsh-desktop-use` 为例，它的三段式结构 [^1]：
+> **2026-11 补充更正**：DeepSeek 已于 **2026-09-29 发布官方桌面 APP**（macOS Apple Silicon / Windows x64，官网 `download.deepseek.com` 直接下载），电脑端日常使用**不再需要手动开浏览器、也不用跑 `npx @deepseek-ai/dsh web`** [^6]。所以「电脑上 DSH 是在浏览器里开的」这个说法在**使用方式**上已经过时，之前的表述在此更正。
+>
+> 但**架构结论不变，反而被官方实现直接证实**：官方桌面 APP 是 `apps/desktop`，用 **Electron 把完整的 dsh Web 应用 + Node/Python 运行时一起封装进原生壳**，界面层依旧是 Web UI，本地仍起一个 Harness 后端进程，工具依旧注册在 **Host 侧 `ctx.tools`** [^6][^7]。`dsh-desktop-use` 在官方 APP 上仍需独立的 PowerShell 原生助手去调 `user32.dll`。也就是说，官方自己就是「**原生壳 + Web UI 前端 + 内置 Node 宿主 + 原生助手**」的结构 —— 这正是「前端形态与系统能力无关」的实证。
+
+以「AI 操作电脑」为例，无论前端是哪个形态，结构都是三段式 [^1]：
 
 | 部分 | 位置 | 职责 |
 |---|---|---|
 | 宿主半边 `lib/index.js` | **Node 后端** | 把 `computer_click` / `computer_screenshot` 等注册进 `ctx.tools` |
-| 桌面助手 `helper.ps1` | 原生进程 | P/Invoke 调 `user32.dll` 发鼠标键盘、`System.Drawing` 截图 |
-| 浏览器半边 `lib/client.js` | Web UI | 只是输入框旁的一个开关，读写回环路由 |
+| 原生助手 `helper.ps1` | 原生进程 | P/Invoke 调 `user32.dll` 发鼠标键盘、`System.Drawing` 截图 |
+| 前端半边 `lib/client.js` | Web UI（浏览器标签 / PWA / Electron 壳都一样） | 只是输入框旁的一个开关，读写回环路由 |
 
-也就是说，**电脑版 DSH Web UI 同样跑在浏览器/webview 里**，真正干活的是后端宿主 + 原生助手。前端是浏览器还是原生 App，与「能不能操控系统」无关。
+也就是说，**电脑端从「浏览器开 Web UI」变成「官方 APP 开 Web UI」，只是把浏览器打包进了壳里**；真正干活的仍是后端宿主 + 原生助手。前端是浏览器标签、PWA 还是原生 App，与「能不能操控系统」无关。
+
+### 2.1 官方桌面 APP 与我们的包
+
+| | 官方桌面 APP | 我们的 `+ios15` 包 |
+|---|---|---|
+| Node / Harness 运行时 | 随安装包自带（0.2.2-rc.1 需 Node ≥24.9） | 随 deb 自带（锁 **Node 22.12.0**，A11 唯一 100% 可用） |
+| 界面层 | 内置 Electron/Chromium 里的 **Web UI** | Safari 16.6 里的 **Web UI** |
+| 进程宿主 | APP 自动管理本地 Harness 进程 | 终端 `dsh` 起 Host，跑在 `/var/jb` |
+| 系统级操控能力 | 仍需 `dsh-desktop-use` + PowerShell 原生助手 | 仍需 `ios-mcp` 越狱 tweak |
+| 平台 | macOS arm64 / Windows x64（Linux 官方不支持） | iPhone X / iOS 16.7.15 / Dopamine rootless |
+
+两点值得注意：
+
+1. **官方能升 0.2.2-rc.1，靠的正是「自带新版 Node」**；我们升不了，是因为 A11 上不存在 Node ≥24.9 的 iOS arm64 二进制（详见 [`DSH-NODE-UPGRADE-EVALUATION.md`](DSH-NODE-UPGRADE-EVALUATION.md)）。这从侧面解释了版本差异的根因，跟前端是不是 APP 毫无关系。
+2. **官方目前没有 iOS / Android 手机 APP**，移动端部署仍列在路线图里 [^6][^7]；市面所谓「DeepSeek App」是聊天助手，不是 Harness。iOS 上的第三方原生客户端（DSH Go 适配中、`dsh-mobile` / `ds-harness-remote` 的 TestFlight beta）都是**连电脑 Host 的远程壳**，引擎仍跑在电脑或安卓本机。因此**我们这个包依然是 iPhone X 上「DSH 引擎跑在本机」的唯一可行路径**，地位不变。
+
+> 顺带回答「要不要也做个 iOS 原生壳」：不划算也没必要。我们已经自带 Node + Harness + 完整 Web UI + Safari 16 垫片，做 `WKWebView` 套壳只能省掉「打开 Safari」这一步，用的还是同一个 WebKit，对「操作手机」零帮助；而越狱环境下 Safari 免签名、免描述文件、免处理后台保活。真正缺的从来不是界面壳，是原生能力通道。
 
 我们的情况同理：
 
@@ -260,3 +281,5 @@ get_syslog / get_crash_logs 看有没有崩
 [^3]: [dsh-preset-mobile-use（要求 root，headless 虚拟显示 105 步绘图）](https://github.com/AcidGr/dsh-preset-mobile-use/blob/main/README.md)
 [^4]: [witchan/ios-mcp（46 工具 / rootless iphoneos-arm64 / MIT / 安全说明）](https://github.com/witchan/ios-mcp)
 [^5]: 官方模板 `@deepseek-ai/dsh-agent-preset/skills/cordis-plugin-development/templates/mcp/cordis.patch.yml`（包内）
+[^6]: [官方桌面版下载与实测：apps/desktop 基于 Electron 封装完整 dsh Web 应用，自带 Node/Python 运行时，macOS arm64 / Windows x64，默认端口 19387](https://cloud.tencent.com/developer/article/2779419)；发布时间与平台见 [DeepSeek Harness 桌面版](https://baike.baidu.com/item/DeepSeek%20Harness桌面版/69202199)
+[^7]: [官方仓库 `deepseek-ai/deepseek-harness`（README 仍以 `npx ... web` / `pnpm dsh web` 为主，desktop 为 `apps/desktop`，MIT）](https://github.com/deepseek-ai/deepseek-harness)；「无官方手机 App / 移动端仍在路线图」见 [DSH 手机端访问路径](https://dsh-plugin.org/zh/tutorials/dsh-mobile-access-paths) 与 [DeepSeek Harness in VS Code / from your phone](https://www.productcompass.pm/p/deepseek-harness-in-vs-code)

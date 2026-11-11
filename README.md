@@ -75,7 +75,7 @@ sh fix-ios15.sh --restore    # 回滚启动文件（用户数据不动）
 
 用户问「安卓 DSH-Go 能自动滑出 App、找 B 站、刷视频总结，我们浏览器里打开的能不能」。**能，而且不用写原生代码、不用改浏览器前端、不用重打包 deb。**
 
-关键是：**前端是浏览器还是原生 App，与「能不能操控系统」无关**。电脑版 `dsh-desktop-use` 的 Web UI 也跑在浏览器里，真正干活的是 Host 侧 `ctx.tools` + 原生助手；我们的 DSH Host（Node）本来就跑在 iPhone 本机。缺的只是「原生能力通道」，现在由第三方越狱插件补上：
+关键是：**前端是浏览器还是原生 App，与「能不能操控系统」无关**。DeepSeek 已于 2026-09-29 发布**官方桌面 APP**（macOS arm64 / Windows x64，电脑端不再需要手动开浏览器），但它是 `apps/desktop` 用 Electron 把完整 dsh Web 应用 + Node 运行时封装进壳里，界面层仍是 Web UI、工具仍注册在 Host 侧 `ctx.tools`，「操作电脑」仍要靠 `dsh-desktop-use` + 原生 PowerShell 助手——**官方实现恰好印证了这条结论**。官方目前**没有 iOS/手机 APP**，移动端部署仍在路线图；我们的 DSH Host（Node）本来就跑在 iPhone 本机，缺的只是「原生能力通道」，现在由第三方越狱插件补上。详见 [`docs/IOS-PHONE-CONTROL.md` 第 2 节](docs/IOS-PHONE-CONTROL.md)。
 
 ```
 Safari Web UI（不用改）
