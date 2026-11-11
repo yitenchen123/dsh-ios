@@ -1,0 +1,93 @@
+#!/bin/sh
+# postinst — dev.airdevs.dsh-app
+# 目标（用户要求）：像 UTM 的 deb 一样，装完桌面出现 DSH APP 图标，点开即用；
+# 同时让 DSH 本体由 launchd 常驻保活，终端被系统杀掉也不影响。
+set -e
+JB=/var/jb
+APP="$JB/Applications/DSH.app"
+PLIST="$JB/Library/LaunchDaemons/dev.airdevs.dsh.plist"
+CTL="$JB/usr/bin/dsh-app-ctl"
+ENT="$APP/entitlements.plist"
+DSHHOME="$JB/var/mobile/.dsh"
+
+if [ ! -L "$JB" ]; then
+    echo "dsh-app: 未检测到 rootless 越狱环境 (/var/jb)，跳过注册。" >&2
+    exit 0
+fi
+
+# --- 1) 权限：可执行文件必须 755，plist/图标 644 ---
+chmod 755 "$APP/DSHLauncher" "$JB/usr/bin/dsh-app-ui" \
+           "$JB/usr/bin/dsh-app-ctl" "$JB/usr/bin/dsh-daemon" \
+           "$JB/usr/bin/dsh-phone-bridge-daemon" \
+           "$JB/usr/bin/dsh-phone-bridge-ctl" 2>/dev/null || true
+chmod 644 "$APP/Info.plist" "$APP/entitlements.plist" "$PLIST" 2>/dev/null || true
+chmod 644 "$APP"/*.png 2>/dev/null || true
+
+# --- 2) 伪签名：ldid -S<entitlements>（ad-hoc，无需 Apple 证书）---
+# 构建期已由 ld.lld -adhoc_codesign 写入 LC_CODE_SIGNATURE；这里再用设备上的
+# ldid 补上 platform-application / no-sandbox 等 entitlements。
+# 没有 ldid 也不致命：保留构建期 ad-hoc 签名，图标仍可注册（部分设备会拒绝启动，
+# dsh-app-ctl status 会显示；可稍后手动 ldid 重签）。
+LDID=""
+for c in "$JB/usr/bin/ldid" "$JB/bin/ldid" /usr/bin/ldid /usr/local/bin/ldid; do
+    [ -x "$c" ] && { LDID="$c"; break; }
+done
+[ -z "$LDID" ] && LDID=$(command -v ldid 2>/dev/null || true)
+if [ -n "$LDID" ] && [ -f "$ENT" ]; then
+    "$LDID" -S"$ENT" "$APP/DSHLauncher" 2>/dev/null \
+        || "$LDID" -S "$APP/DSHLauncher" 2>/dev/null \
+        || echo "dsh-app: [warn] ldid 重签失败，保留构建期 ad-hoc 签名" >&2
+    echo "dsh-app: 已用 ldid 伪签 DSHLauncher（无需 Apple 证书）。"
+else
+    echo "dsh-app: [info] 未找到 ldid，保留构建期 ad-hoc 签名。"
+fi
+# 尽力注入 trustcache（Dopamine 一般自动注册 jbroot 内已签名二进制）
+if command -v trustcache >/dev/null 2>&1; then
+    trustcache inject "$APP/DSHLauncher" 2>/dev/null || true
+fi
+
+# --- 3) 用户数据目录：mobile(501) 属主，避免 daemon 以 mobile 跑时 EACCES ---
+mkdir -p "$DSHHOME/logs" 2>/dev/null || true
+if command -v chown >/dev/null 2>&1; then
+    chown -R 501:501 "$DSHHOME" 2>/dev/null || true
+fi
+chmod -R u+rwX "$DSHHOME" 2>/dev/null || true
+chmod 777 "$DSHHOME" "$DSHHOME/logs" 2>/dev/null || true
+
+# --- 3b) 手机操控工具链：把 MCP 客户端注册进 DSH 的 patch 层 ---
+# 用户要求「启动 DSH 让 DSH 操作手机，能够直接调用相关工具链」。
+# root 写完立刻改回 mobile 属主（+ios12 的 EACCES 坑）；bridge daemon 每次
+# 启动还会以 mobile 身份幂等 ensure-config，所以这里失败也不致命。
+BRCTL="$JB/usr/bin/dsh-phone-bridge-ctl"
+if [ -x "$BRCTL" ]; then
+    "$BRCTL" config-on >/dev/null 2>&1 || true
+    chown -R 501:501 "$DSHHOME" 2>/dev/null || true
+    echo "dsh-app: 已注册手机工具链（mcp__ios__*；config-off 可关闭）。"
+fi
+
+# --- 4) 注册 LaunchDaemon（保活核心）---
+# 用 dsh-app-ctl 统一处理 bootstrap / load 两种 launchctl 语法，失败不阻断安装。
+"$CTL" enable >/dev/null 2>&1 \
+    || echo "dsh-app: [warn] launchd 未即时加载；越狱重启后会自动 RunAtLoad，或手动 dsh-app-ctl enable" >&2
+
+# --- 4b) 拉起手机工具链 daemon（独立 RunAtLoad + KeepAlive）---
+# 与 DSH 本体解耦：终端被杀 / DSH 重启 / bridge 崩溃都不影响工具链可用。
+if [ -x "$BRCTL" ]; then
+    "$BRCTL" enable >/dev/null 2>&1 \
+        || echo "dsh-app: [warn] phone-bridge 未即时加载；越狱重启后 RunAtLoad 会自动拉起" >&2
+fi
+
+# --- 5) 注册桌面图标（uicache）---
+"$CTL" register >/dev/null 2>&1 \
+    || echo "dsh-app: [warn] uicache 未即时生效；respring 一次或手动 dsh-app-ctl register" >&2
+
+# --- 6) 便捷软链 ---
+if [ ! -e "$JB/bin/dsh-app-ctl" ]; then
+    mkdir -p "$JB/bin" 2>/dev/null || true
+    ln -sf "$CTL" "$JB/bin/dsh-app-ctl" 2>/dev/null || true
+fi
+
+echo "dsh-app 安装完成：桌面出现 DSH 图标；DSH 已由 launchd 常驻保活。"
+echo "  终端不再需要敲 dsh。管理命令：dsh-app-ctl status|restart|log|register"
+echo "  手机工具链：dsh-phone-bridge-ctl status|tools|config-off（mcp__ios__* 已自动注册）"
+exit 0

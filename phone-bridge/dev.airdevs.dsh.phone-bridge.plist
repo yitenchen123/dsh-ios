@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.airdevs.dsh.phone-bridge</string>
+
+	<!-- 前台进程：dsh-phone-bridge-daemon 直接 exec，绝不自己 fork/daemonize -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/var/jb/usr/bin/dsh-phone-bridge-daemon</string>
+	</array>
+
+	<!-- launchd 不继承终端环境，必须显式写全 -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/var/mobile</string>
+		<key>DSH_HOME</key>
+		<string>/var/jb/var/mobile/.dsh</string>
+		<key>PATH</key>
+		<string>/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>NODE_PATH</key>
+		<string>/var/jb/usr/lib/dsh/node_modules</string>
+		<key>DSH_BRIDGE_PORT</key>
+		<string>8091</string>
+		<key>DSH_IOS_MCP_URL</key>
+		<string>http://127.0.0.1:8090/mcp</string>
+	</dict>
+
+	<!-- 越狱激活后自动启动；被 jetsam / SIGBUS / 任何原因杀掉立即拉起。
+	     独立于 DSH 本体：终端被杀、DSH 重启、点 APP 图标都不影响工具链。 -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ExitTimeOut</key>
+	<integer>10</integer>
+
+	<!-- mobile 身份写 $DSH_HOME/cordis.patch.yml，避免 root 属主触发 EACCES -->
+	<key>UserName</key>
+	<string>mobile</string>
+	<key>GroupName</key>
+	<string>mobile</string>
+
+	<key>WorkingDirectory</key>
+	<string>/var/mobile</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityIO</key>
+	<true/>
+
+	<key>StandardOutPath</key>
+	<string>/var/jb/var/mobile/.dsh/logs/phone-bridge.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/jb/var/mobile/.dsh/logs/phone-bridge.err.log</string>
+</dict>
+</plist>

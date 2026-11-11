@@ -1,0 +1,116 @@
+#!/bin/sh
+# dsh-phone-bridge-ctl — 管理「DSH 直接调用手机工具链」的常驻服务与配置
+#
+#   status | health | enable | disable | config-on | config-off | config-status | log | tools
+#
+# 背景：用户要求「启动 DSH 让 DSH 操作手机，能够直接调用相关工具链」。
+# 本包把 MCP 服务做成独立 launchd daemon（RunAtLoad + KeepAlive），
+# 并在 DSH 的 cordis.patch.yml 里幂等注册 MCP 客户端；因此终端敲 dsh、
+# 点桌面 APP 图标、或 launchd 自动拉起 DSH，都能直接用 mcp__ios__* 工具。
+#
+# 关闭方式：dsh-phone-bridge-ctl config-off && dsh-phone-bridge-ctl disable
+JB=/var/jb
+LABEL=dev.airdevs.dsh.phone-bridge
+PLIST="$JB/Library/LaunchDaemons/$LABEL.plist"
+BR="$JB/usr/lib/dsh-phone-bridge"
+NODE="$JB/usr/lib/dsh/bin/node"
+PORT="${DSH_BRIDGE_PORT:-8091}"
+DSHHOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+LOGDIR="$DSHHOME/logs"
+
+find_launchctl() {
+    for c in "$JB/usr/bin/launchctl" "$JB/bin/launchctl" /usr/bin/launchctl /bin/launchctl; do
+        [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    command -v launchctl 2>/dev/null || return 1
+}
+LC=$(find_launchctl 2>/dev/null || true)
+
+# 用包内 node 发 HTTP，不依赖 curl / nc
+health() {
+    [ -x "$NODE" ] || return 1
+    "$NODE" -e '
+      const http=require("http");
+      const req=http.get({host:"127.0.0.1",port:Number(process.argv[1]),path:"/health",timeout:1500},r=>{
+        let b=""; r.on("data",c=>b+=c); r.on("end",()=>{
+          let ok=false; try{ok=JSON.parse(b).status==="ok"}catch(_){}
+          if(ok){process.stdout.write(b+"\n");process.exit(0)} process.exit(1);
+        });
+      });
+      req.on("error",()=>process.exit(1));
+      req.on("timeout",()=>{req.destroy();process.exit(1)});
+    ' "$PORT" 2>/dev/null
+}
+
+bridge_pid() {
+    if [ -n "$LC" ]; then
+        P=$("$LC" list "$LABEL" 2>/dev/null | awk '/"PID"/{gsub(/[^0-9]/,"",$3);print $3;exit}')
+        [ -n "$P" ] && [ "$P" != "0" ] && { printf '%s' "$P"; return 0; }
+    fi
+    for p in $(pgrep -f 'dsh-phone-bridge/server.cjs' 2>/dev/null); do printf '%s' "$p"; return 0; done
+    return 1
+}
+
+do_bootstrap() {
+    [ -f "$PLIST" ] || { echo "dsh-phone-bridge-ctl: 缺少 $PLIST" >&2; return 1; }
+    [ -n "$LC" ] || { echo "dsh-phone-bridge-ctl: 找不到 launchctl" >&2; return 1; }
+    "$LC" bootstrap system "$PLIST" >/dev/null 2>&1 && return 0
+    "$LC" list "$LABEL" >/dev/null 2>&1 && return 0
+    "$LC" load -w "$PLIST" >/dev/null 2>&1 && return 0
+    return 1
+}
+do_bootout() {
+    [ -z "$LC" ] && return 0
+    "$LC" bootout "system/$LABEL" >/dev/null 2>&1 && return 0
+    "$LC" unload -w "$PLIST" >/dev/null 2>&1 && return 0
+    "$LC" remove "$LABEL" >/dev/null 2>&1 && return 0
+    return 0
+}
+
+config() {
+    [ -x "$NODE" ] && [ -f "$BR/ensure-config.cjs" ] || { echo "缺 ensure-config.cjs" >&2; return 1; }
+    "$NODE" "$BR/ensure-config.cjs" "$DSHHOME" "$1"
+}
+
+# 直接在设备上列出当前可用工具（诊断用；DSH 自己会通过 MCP 拿同一份列表）
+list_tools() {
+    [ -x "$NODE" ] || return 1
+    "$NODE" -e '
+      const http=require("http");
+      const body=JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/list",params:{}});
+      const req=http.request({host:"127.0.0.1",port:Number(process.argv[1]),path:"/mcp",method:"POST",
+        headers:{"Content-Type":"application/json","Accept":"application/json, text/event-stream",
+                 "MCP-Protocol-Version":"2025-11-25","Content-Length":Buffer.byteLength(body)},timeout:5000},r=>{
+        let b="";r.on("data",c=>b+=c);r.on("end",()=>{
+          try{const t=JSON.parse(b).result.tools||[];console.log("工具数: "+t.length);t.forEach(x=>console.log("  "+x.name))}
+          catch(_){console.log("解析失败: "+b.slice(0,300));process.exit(1)}
+        });
+      });
+      req.on("error",e=>{console.log("连接失败: "+e.message);process.exit(1)});
+      req.on("timeout",()=>{req.destroy();process.exit(1)});
+      req.write(body);req.end();
+    ' "$PORT"
+}
+
+case "${1:-status}" in
+    health)
+        health && exit 0 || { echo "bridge 127.0.0.1:$PORT/health 不可连"; exit 1; } ;;
+    status)
+        echo "=== dsh-phone-bridge 状态 ==="
+        P=$(bridge_pid 2>/dev/null || true)
+        if [ -n "$P" ]; then echo "daemon:  已运行 (PID=$P, launchd KeepAlive)"; else echo "daemon:  未运行"; fi
+        if H=$(health 2>/dev/null); then echo "health:  $H"; else echo "health:  不可连（127.0.0.1:$PORT）"; fi
+        config status 2>/dev/null | "$NODE" -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(s);j.results.forEach(r=>console.log("patch:   "+r.file+" registered="+r.registered+" valid="+r.valid))}catch(_){}})' 2>/dev/null || true
+        ;;
+    enable)  do_bootstrap && echo "phone-bridge 已启用（RunAtLoad + KeepAlive）" || echo "启用未即时生效，越狱重启后会自动 RunAtLoad" ;;
+    disable) do_bootout && echo "phone-bridge 已停用" ;;
+    config-on)     config on ;;
+    config-off)    config off ;;
+    config-status) config status ;;
+    log)
+        for f in "$LOGDIR/phone-bridge.err.log" "$LOGDIR/phone-bridge.out.log"; do
+            [ -f "$f" ] && { echo "--- $f ---"; tail -40 "$f"; }
+        done ;;
+    tools)   list_tools ;;
+    *) echo "用法: dsh-phone-bridge-ctl status|health|enable|disable|config-on|config-off|config-status|log|tools" >&2; exit 64 ;;
+esac

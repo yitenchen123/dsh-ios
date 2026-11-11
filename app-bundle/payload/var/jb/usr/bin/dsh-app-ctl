@@ -1,0 +1,120 @@
+#!/bin/sh
+# dsh-app-ctl — 管理 launchd 保活 daemon 与 SpringBoard app 注册。
+#   status | ensure | ping | start | stop | restart | log | enable | disable | register
+# 幂等：ensure 在 daemon 已活着时直接返回 0，不会重复启动第二个 DSH。
+JB=/var/jb
+LABEL=dev.airdevs.dsh
+PLIST="$JB/Library/LaunchDaemons/$LABEL.plist"
+APP="$JB/Applications/DSH.app"
+NODE="$JB/usr/lib/dsh/bin/node"
+PORT="${DSH_WEB_PORT:-3080}"
+DSHHOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+LOGDIR="$DSHHOME/logs"
+
+# launchctl 在 rootless 上可能位于 jbroot，也可能直接可调用
+find_launchctl() {
+    for c in "$JB/usr/bin/launchctl" "$JB/bin/launchctl" /usr/bin/launchctl /bin/launchctl; do
+        [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    command -v launchctl 2>/dev/null || return 1
+}
+LC=$(find_launchctl 2>/dev/null || true)
+
+# 真探活：用包内 node 发 HTTP 请求，不依赖 curl/nc 是否存在
+ping() {
+    [ -x "$NODE" ] || return 1
+    "$NODE" -e '
+      const http=require("http");
+      const req=http.get({host:"127.0.0.1",port:Number(process.argv[1]),path:"/",timeout:1200},r=>{
+        r.resume(); process.exit(r.statusCode < 500 ? 0 : 1);
+      });
+      req.on("error",()=>process.exit(1));
+      req.on("timeout",()=>{req.destroy();process.exit(1)});
+    ' "$PORT" >/dev/null 2>&1
+}
+
+daemon_pid() {
+    # dsh-daemon 是 launchd 直接管的进程；用 label 查最准，退化到 pgrep -f
+    if [ -n "$LC" ]; then
+        P=$("$LC" list "$LABEL" 2>/dev/null | awk '/"PID"/{gsub(/[^0-9]/,"",$3);print $3;exit}')
+        [ -n "$P" ] && [ "$P" != "0" ] && { printf '%s' "$P"; return 0; }
+    fi
+    for p in $(pgrep -f '/var/jb/usr/bin/dsh-daemon' 2>/dev/null); do
+        printf '%s' "$p"; return 0
+    done
+    return 1
+}
+
+do_bootstrap() {
+    [ -f "$PLIST" ] || { echo "dsh-app-ctl: 缺少 $PLIST" >&2; return 1; }
+    if [ -z "$LC" ]; then echo "dsh-app-ctl: 找不到 launchctl" >&2; return 1; fi
+    # 新版 launchd
+    "$LC" bootstrap system "$PLIST" >/dev/null 2>&1 && return 0
+    # 已经在跑也视为成功
+    "$LC" list "$LABEL" >/dev/null 2>&1 && return 0
+    # 旧式 load
+    "$LC" load -w "$PLIST" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+do_bootout() {
+    [ -z "$LC" ] && return 0
+    "$LC" bootout "system/$LABEL" >/dev/null 2>&1 && return 0
+    "$LC" unload -w "$PLIST" >/dev/null 2>&1 && return 0
+    "$LC" remove "$LABEL" >/dev/null 2>&1 && return 0
+    return 0
+}
+
+do_register() {
+    # uicache：rootless 上常见 -p <path> / -a / -r，多种都试，任一成功即可
+    U=""
+    for c in "$JB/usr/bin/uicache" "$JB/bin/uicache" /usr/bin/uicache; do
+        [ -x "$c" ] && { U="$c"; break; }
+    done
+    [ -z "$U" ] && U=$(command -v uicache 2>/dev/null || true)
+    if [ -n "$U" ]; then
+        "$U" -p "$APP" >/dev/null 2>&1 && return 0
+        "$U" -a >/dev/null 2>&1 && return 0
+        "$U" -r >/dev/null 2>&1 && return 0
+        "$U" "$APP" >/dev/null 2>&1 && return 0
+    fi
+    return 1
+}
+
+ensure() {
+    if ping; then return 0; fi
+    do_bootstrap || true
+    # 等最多 ~8s
+    i=0
+    while [ "$i" -lt 16 ]; do
+        ping && return 0
+        i=$((i+1)); sleep 0.5 2>/dev/null || true
+    done
+    return 1
+}
+
+case "${1:-status}" in
+    ping)      ping && { echo "DSH Web UI 127.0.0.1:$PORT 可连"; exit 0; } || { echo "不可连"; exit 1; } ;;
+    ensure)    ensure && { echo "daemon 就绪"; exit 0; } || { echo "daemon 未就绪（看 log）"; exit 1; } ;;
+    status)
+        P=$(daemon_pid 2>/dev/null || true)
+        if [ -n "$P" ]; then echo "daemon: 运行中 (PID $P)"; else echo "daemon: 未运行"; fi
+        if ping; then echo "web:     127.0.0.1:$PORT 可连"; else echo "web:     未就绪"; fi
+        if [ -n "$LC" ]; then "$LC" list "$LABEL" 2>/dev/null | head -6 || true; fi
+        [ -f "$PLIST" ] && echo "plist:   $PLIST" || echo "plist:   缺失"
+        [ -d "$APP" ]   && echo "app:     $APP"   || echo "app:     缺失"
+        ;;
+    start)     do_bootstrap && echo "已 bootstrap $LABEL" || echo "bootstrap 失败（看 log）" ;;
+    stop)      do_bootout && echo "已停止 $LABEL" ;;
+    restart)   do_bootout; sleep 1 2>/dev/null || true; do_bootstrap && echo "已重启" ;;
+    enable)    do_bootstrap && echo "保活已启用（RunAtLoad + KeepAlive）" ;;
+    disable)   do_bootout && echo "保活已停用（卸载后可用 enable 恢复）" ;;
+    register)  do_register && echo "已 uicache 注册桌面图标" || echo "uicache 未成功（可能需 respring）" ;;
+    log)
+        echo "=== out (tail 40) ==="; tail -40 "$LOGDIR/dsh-daemon.out.log" 2>/dev/null || echo "(无)"
+        echo "=== err (tail 40) ==="; tail -40 "$LOGDIR/dsh-daemon.err.log" 2>/dev/null || echo "(无)"
+        echo "=== app-ui (tail 20) ==="; tail -20 "$LOGDIR/app-ui.log" 2>/dev/null || echo "(无)"
+        ;;
+    *) echo "用法: dsh-app-ctl status|ensure|ping|start|stop|restart|log|enable|disable|register" >&2; exit 64 ;;
+esac
+exit 0

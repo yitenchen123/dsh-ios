@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.airdevs.dsh</string>
+
+	<!-- launchd 要求前台进程：dsh-daemon 直接 exec，绝不自己 fork/daemonize -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/var/jb/usr/bin/dsh-daemon</string>
+	</array>
+
+	<!-- launchd 不继承终端环境，必须显式写全；否则 DSH_HOME 落空 / pnpm 127 -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>/var/mobile</string>
+		<key>DSH_HOME</key>
+		<string>/var/jb/var/mobile/.dsh</string>
+		<key>PATH</key>
+		<string>/var/jb/usr/bin:/var/jb/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>NODE_PATH</key>
+		<string>/var/jb/usr/lib/dsh/node_modules</string>
+		<key>PNPM_HOME</key>
+		<string>/var/jb/var/mobile/.dsh/pnpm</string>
+		<key>XDG_DATA_HOME</key>
+		<string>/var/jb/var/mobile/.dsh/pnpm-data</string>
+		<key>XDG_CACHE_HOME</key>
+		<string>/var/jb/var/mobile/.dsh/pnpm-cache</string>
+		<key>npm_config_cache</key>
+		<string>/var/jb/var/mobile/.dsh/npm-cache</string>
+		<key>npm_config_store_dir</key>
+		<string>/var/jb/var/mobile/.dsh/pnpm/store</string>
+		<key>DSH_WEB_PORT</key>
+		<string>3080</string>
+	</dict>
+
+	<!-- 越狱激活后自动启动；进程被 jetsam/SIGBUS/任何原因杀掉立即拉起 -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<!-- 防崩溃循环：最短 10 秒重启一次 -->
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ExitTimeOut</key>
+	<integer>10</integer>
+
+	<!-- 以 mobile 运行：避免 root 属主污染 $DSH_HOME 触发 EACCES（+ios12 历史坑） -->
+	<key>UserName</key>
+	<string>mobile</string>
+	<key>GroupName</key>
+	<string>mobile</string>
+
+	<key>WorkingDirectory</key>
+	<string>/var/mobile</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityIO</key>
+	<true/>
+
+	<key>StandardOutPath</key>
+	<string>/var/jb/var/mobile/.dsh/logs/dsh-daemon.out.log</string>
+	<key>StandardErrorPath</key>
+	<string>/var/jb/var/mobile/.dsh/logs/dsh-daemon.err.log</string>
+</dict>
+</plist>

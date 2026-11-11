@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- rootless 越狱 app 必需：让 SpringBoard 以「平台应用」启动 /var/jb 下的 .app。
+	     这是 ldid 伪签（ad-hoc），不需要 Apple 开发者证书。参考 UTM / JBDev /
+	     TrollDecryptJB 的 .app entitlements。 -->
+	<key>platform-application</key>
+	<true/>
+	<!-- 不进 App Sandbox container：DSH.app 需要访问 /var/jb 与 127.0.0.1 回环 -->
+	<key>com.apple.private.security.container-required</key>
+	<false/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<!-- 允许 exec 另一个（已签名）可执行文件 dsh-app-ui -->
+	<key>com.apple.private.skip-library-validation</key>
+	<true/>
+	<key>get-task-allow</key>
+	<true/>
+</dict>
+</plist>

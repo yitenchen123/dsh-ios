@@ -1,0 +1,18 @@
+#!/bin/sh
+# prerm — 卸载前停止 daemon、注销图标；保留 $DSH_HOME 里的会话与配置。
+set -e
+JB=/var/jb
+CTL="$JB/usr/bin/dsh-app-ctl"
+BRCTL="$JB/usr/bin/dsh-phone-bridge-ctl"
+if [ -x "$CTL" ]; then
+    "$CTL" disable >/dev/null 2>&1 || true
+fi
+# 顺带停用工具链 daemon 并移除自动注册的 MCP 配置（保留用户其它 patch 块）
+if [ -x "$BRCTL" ]; then
+    "$BRCTL" disable >/dev/null 2>&1 || true
+    "$BRCTL" config-off >/dev/null 2>&1 || true
+fi
+if [ -L "$JB/bin/dsh-app-ctl" ]; then
+    rm -f "$JB/bin/dsh-app-ctl" 2>/dev/null || true
+fi
+exit 0

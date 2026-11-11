@@ -1,0 +1,24 @@
+#!/bin/sh
+# dsh-daemon — launchd 前台入口（绝不 fork / daemonize）。
+# launchd 通过 KeepAlive 监视这一个 PID；进程被 jetsam 杀掉后立即重拉。
+#
+# 所有环境变量由 dev.airdevs.dsh.plist 的 EnvironmentVariables 提供，
+# 这里再兜底一次（万一某台设备的 launchd 不注入 env）。
+JB=/var/jb
+export HOME="${HOME:-/var/mobile}"
+export DSH_HOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+export PATH="$JB/usr/bin:$JB/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export NODE_PATH="${NODE_PATH:-$JB/usr/lib/dsh/node_modules}"
+export PNPM_HOME="$DSH_HOME/pnpm"
+export XDG_DATA_HOME="$DSH_HOME/pnpm-data"
+export XDG_CACHE_HOME="$DSH_HOME/pnpm-cache"
+export npm_config_cache="$DSH_HOME/npm-cache"
+export npm_config_store_dir="$DSH_HOME/pnpm/store"
+export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=384}"
+
+mkdir -p "$DSH_HOME/logs" 2>/dev/null || true
+
+# 关键：launchd 管的是「这一个进程」，所以必须 exec，不能留一层 shell。
+# dsh 入口自身不带 exec（要留一次 SIGBUS 自动降级机会），它是这条链上
+# 唯一的中间进程；dsh-app-ctl 用 pkill/pgrep 时也以它为锚点。
+exec "$JB/usr/bin/dsh" web --no-open --port "${DSH_WEB_PORT:-3080}"

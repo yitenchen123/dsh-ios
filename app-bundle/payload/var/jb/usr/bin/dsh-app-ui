@@ -1,0 +1,48 @@
+#!/bin/sh
+# dsh-app-ui — 点桌面 DSH 图标后由 DSHLauncher exec 进来。
+# 职责：① 确保 launchd daemon 在跑（被杀也会自动拉起，这里只做兜底 kick）
+#       ② 打开 DSH Web UI（Safari），让用户「点开 APP 就能用」。
+# 全部用绝对路径：SpringBoard 启动的进程没有可靠的 PATH。
+JB=/var/jb
+CTL="$JB/usr/bin/dsh-app-ctl"
+PORT="${DSH_WEB_PORT:-3080}"
+URL="http://127.0.0.1:${PORT}/"
+LOG="$JB/var/mobile/.dsh/logs/app-ui.log"
+mkdir -p "$JB/var/mobile/.dsh/logs" 2>/dev/null || true
+say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "$*" >> "$LOG" 2>/dev/null; }
+
+say "tapped: port=$PORT"
+
+# 1) 确保 daemon 已加载并活着。ensure 是幂等的：已跑就直接返回。
+"$CTL" ensure >> "$LOG" 2>&1 || say "ensure returned non-zero (continuing)"
+
+# 2) 等 Web UI 真正可连（最多 ~10s），避免 Safari 打开时撞上还没 listen。
+i=0
+while [ "$i" -lt 20 ]; do
+    if "$JB/usr/bin/dsh-app-ctl" ping >>/dev/null 2>&1; then break; fi
+    i=$((i+1))
+    sleep 0.5 2>/dev/null || true
+done
+say "web reachable after ${i} half-seconds"
+
+# 3) 打开 Web UI。优先 uiopen（rootless 越狱自带），退化到 open / sbreload 都不用：
+#    没有 uiopen 时至少把 URL 写进日志 + 通知，用户手动开 Safari 也能用。
+OPENED=0
+for BIN in "$JB/usr/bin/uiopen" "$JB/bin/uiopen" /usr/bin/uiopen /usr/bin/open "$JB/usr/bin/open"; do
+    if [ -x "$BIN" ]; then
+        if "$BIN" "$URL" >/dev/null 2>&1; then OPENED=1; say "opened via $BIN"; break; fi
+    fi
+done
+if [ "$OPENED" -eq 0 ]; then
+    # 兜底：用 launchctl 把 URL 交给 SpringBoard 的 open 服务（部分环境可用）
+    if command -v launchctl >/dev/null 2>&1; then
+        launchctl open "$URL" >/dev/null 2>&1 && { OPENED=1; say "opened via launchctl open"; }
+    fi
+fi
+if [ "$OPENED" -eq 0 ]; then
+    say "no opener available; user can open $URL manually in Safari"
+fi
+
+# 4) 立刻退出。DSH 本体在 launchd daemon 里，不依赖这个 app 的生命周期；
+#    SpringBoard 看到 app 正常退出不会弹「已停止」崩溃框。
+exit 0
