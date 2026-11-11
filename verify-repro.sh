@@ -50,15 +50,41 @@ SHA2=$(sha256sum "$OUT" | cut -d' ' -f1)
 echo "    SHA2 = $SHA2"
 
 echo
-if [ "$SHA1" = "$SHA2" ]; then
-    echo "=== 结论：字节级可复现 ✔  两次构建 SHA-256 完全一致 ==="
+echo "=== 4) 第三次构建（故意打乱源树文件 mode，模拟不同 clone/解包/umask）==="
+# `git archive | tar -x`（root）会把 100644/100755 解成 664/775，某些 umask
+# 也会让检出带组写位。build.sh 打包前会把 mode 归一化，所以即使源树被
+# 扰动，产物仍必须与前两次字节一致。这是「别人 clone 后 1:1 重建」的核心防线。
+# 用 git 记录的两档 mode 做扰动；结束时用 git checkout 精确还原（trap 兜底）。
+restore_mode() {
+    git -C "$ROOT" checkout -- bundles/pnpm 2>/dev/null || true
+}
+trap restore_mode EXIT HUP INT TERM
+# 只加 group-write 位、保留 owner-x 语义：100644→664、100755→775。
+# 这才是 git archive / 非标准 umask 的真实偏差；若把可执行文件也抹成
+# 664 会丢失 x 位信息（git 本身不会这样），归一化无法凭空还原，不属本测试范围。
+find "$ROOT/bundles/pnpm" -type f '!' -perm /100 -exec chmod 664 {} +
+find "$ROOT/bundles/pnpm" -type f -perm /100 -exec chmod 775 {} +
+find "$ROOT/bundles/pnpm" -type d -exec chmod 775 {} +
+echo "    已把 bundles/pnpm 扰动为 664/775（git 记录为 644/755，x 位保留）"
+DSH_SKIP_BOOTSTRAP=1 sh "$ROOT/build.sh" > /tmp/verify-repro-3.log 2>&1 || {
+    echo "第三次构建失败，日志尾：" >&2; tail -30 /tmp/verify-repro-3.log >&2; exit 1; }
+SHA3=$(sha256sum "$OUT" | cut -d' ' -f1)
+echo "    SHA3 = $SHA3"
+restore_mode
+trap - EXIT HUP INT TERM
+echo "    已用 git checkout 还原 bundles/pnpm 的 mode"
+
+echo
+if [ "$SHA1" = "$SHA2" ] && [ "$SHA1" = "$SHA3" ]; then
+    echo "=== 结论：字节级可复现 ✔  三次构建（含 mode 扰动）SHA-256 完全一致 ==="
     echo "    $SHA1  $OUT"
     exit 0
 else
     echo "=== 结论：不一致 ✘ ===" >&2
-    echo "    SHA1=$SHA1" >&2
-    echo "    SHA2=$SHA2" >&2
-    echo "    排查：stage 内是否有未固定 mtime 的文件、dpkg-deb 版本差异、" >&2
+    echo "    SHA1(基准)=$SHA1" >&2
+    echo "    SHA2(扰动 mtime)=$SHA2" >&2
+    echo "    SHA3(扰动 mode)=$SHA3" >&2
+    echo "    排查：stage 内是否有未固定 mtime/mode 的文件、dpkg-deb 版本差异、" >&2
     echo "          gzip 是否写入了时间戳、control.tar 是否含随机顺序。" >&2
     exit 1
 fi

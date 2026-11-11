@@ -5,6 +5,9 @@
 # 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
 #       DSH_VER=0.2.2-rc.1 sh bootstrap.sh && DSH_VER=0.2.2-rc.1 sh build.sh
 #       sh app-bundle/build-app.sh && sh app-bundle/verify-app.sh
+# 注: build.sh 打包前会把 stage 文件 mode 归一化（目录 755 / 文件 644|755），
+#     因此 `git archive | tar -x` 或非标准 umask 导致的 664/775 也不影响 1:1；
+#     verify-repro.sh 第三次构建会故意扰动 mode 做回归验证。
 # 独立核验: sh verify-deb.sh [deb路径]          两个 deb 各 57 项
 #           sh verify-022.sh <tree> <node22.12>  0.2.2 树 31 项（含真 boot）
 #           sh app-bundle/verify-app.sh           APP 包 73 项

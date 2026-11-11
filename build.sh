@@ -514,13 +514,25 @@ chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 # 原样保留。设备端 postinst 也只在 entitlement 确实缺失时才兜底补签。
 
 # --- 8. 打包（字节级可复现） ---
-# dpkg-deb 会把 stage 内文件的 mtime/uid/gid/排序写进 tar 与 control.tar；
-# 不同 clone 时间、不同 umask 会导致 deb SHA 变化。这里统一：
+# dpkg-deb 会把 stage 内文件的 mtime/mode/uid/gid/排序写进 tar 与 control.tar；
+# 不同 clone 时间、不同 umask、不同解包方式会导致 deb SHA 变化。这里统一：
 #   * 所有 stage 文件/目录/链接 mtime 固定到 SOURCE_DATE_EPOCH
 #   * 属主统一 0:0（dpkg 安装时按 postinst/包管理还原，iOS rootless 下都是 root）
+#   * 文件/目录 mode 按 git 语义归一到固定两档（见下）
 #   * dpkg-deb 用固定的 gzip -z9，且 SOURCE_DATE_EPOCH 让 control 时间戳确定
 # 实测连续构建 SHA-256 完全一致；verify-repro.sh 会真跑两次比对。
 SDE="${SOURCE_DATE_EPOCH:-1700000000}"
+echo "==> 固定 stage 文件 mode（消除 umask / clone / 解包方式差异）"
+# git 只记录「可执行位」两档：100644 → 644、100755 → 755。但用
+# `git archive | tar -x`（root）解包会把它们写成 664/775，某些 umask 也会
+# 让 clone 检出成 660/770，都会被打进 deb 的 tar 导致 SHA 漂移。
+# 这里把 mode 按「目录 755；普通文件 owner 有 x → 755，否则 → 644」归一化，
+# 与真实 git clone 的检出结果一致，且对已是 644/755 的工作区完全幂等
+# （本地交付 deb 的字节因此不变）。符号链接不处理（-type f/-type d 不匹配，
+# 其 lmode 由 tar 固定记录）。
+find "$STAGE" -type d -exec chmod 755 {} +
+find "$STAGE" -type f -perm /100 -exec chmod 755 {} +
+find "$STAGE" -type f '!' -perm /100 -exec chmod 644 {} +
 echo "==> 固定 stage 时间戳 / 属主（SOURCE_DATE_EPOCH=$SDE）"
 # -h 处理符号链接本身；先目录后文件，避免改父目录 mtime 影响子项写入
 chown -R 0:0 "$STAGE" 2>/dev/null || true

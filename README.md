@@ -30,7 +30,7 @@
 ```sh
 DSH_VER=0.2.2-rc.1 sh bootstrap.sh      # 下载 0.2.2 依赖树 bundle（SHA 硬校验）
 DSH_VER=0.2.2-rc.1 sh build.sh          # 产出 dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb
-DSH_VER=0.2.2-rc.1 sh verify-repro.sh   # 两次构建字节一致
+DSH_VER=0.2.2-rc.1 sh verify-repro.sh   # 三次构建（含 mode 扰动）字节一致
 sh verify-022.sh .build/stage/var/jb/usr/lib/dsh /path/to/node-22.12.0  # 31 项核验
 sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb  # 57 项
 ```
@@ -47,7 +47,7 @@ sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb  # 57 
 | 会话创建 / 恢复 | `session.v4.jsonl` 生成且可读回，无 `zstd/corrupt` |
 | 硬约束 | AI/CLI 路径 0 个转化钩子泄漏；`cordis.patch.yml` 顶层均为数组 |
 
-共 **31 项 0 失败**；`verify-deb.sh` 对两个 deb 各 **57 项 0 失败**；两个版本各自 `verify-repro.sh` 两次构建 SHA 完全一致。配套 `dist/fix-ios16.sh` 是 0.2.2 包的热修（单独命名，不覆盖 0.2.1 的 `fix-ios15.sh`）。
+共 **31 项 0 失败**；`verify-deb.sh` 对两个 deb 各 **57 项 0 失败**；两个版本各自 `verify-repro.sh` 三次构建（基准 / 扰动 mtime / 扰动 mode）SHA 完全一致。配套 `dist/fix-ios16.sh` 是 0.2.2 包的热修（单独命名，不覆盖 0.2.1 的 `fix-ios15.sh`）。
 
 > 诚实边界：沙箱里没有 A11 真机，无法验证 ldid 伪签后 APP 启动、`uicache` 注册、launchd `bootstrap`、ios-mcp 的 HID 注入。Node 24.9 的 iOS 可执行文件也不存在，本方案是「同一已验证 Node + 官方最新 DSH + 实测通过的补丁」，不是原生 Node 24。
 
@@ -117,13 +117,13 @@ sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb  # 57 
 git clone https://github.com/yitenchen123/dsh-ios && cd dsh-ios
 sh bootstrap.sh        # 从 Releases 下载 2 个大文件，逐个 SHA-256 硬校验放回 bundles/
 sh build.sh            # 缺大文件会自动调用 bootstrap；全程离线，字节级可复现
-sh verify-repro.sh     # 连跑两次 build 并比对 SHA，证明两次产物完全一致
+sh verify-repro.sh     # 连跑三次 build（含故意打乱源树 mode）并比对 SHA，证明产物完全一致
 sh verify-deb.sh       # 从交付 deb 自解包做 57 项独立断言（无需 iOS 真机）
 ```
 
-可复现的关键：`build.sh` 把所有 stage 文件 mtime/属主固定到 `SOURCE_DATE_EPOCH`（默认 1700000000）、`dpkg-deb -Zgzip -z9`；`bundles/pnpm` 与全部补丁/热修/前端注入都随 git 跟踪且确定性生成（tar 成员排序、gzip mtime=0）。`fix-ios15.sh` 内嵌文件与 deb 内对应文件**逐字节比对**通过才允许出包。
+可复现的关键：`build.sh` 把所有 stage 文件 mtime/属主固定到 `SOURCE_DATE_EPOCH`（默认 1700000000）、`dpkg-deb -Zgzip -z9`；**打包前把 stage 内所有文件/目录 mode 按 git 语义归一化**（目录 755、普通文件 owner 有 x → 755 否则 644），消除 `git archive | tar -x`、非标准 umask 造成的 664/775 漂移；`bundles/pnpm` 与全部补丁/热修/前端注入都随 git 跟踪且确定性生成（tar 成员排序、gzip mtime=0）。`fix-ios15.sh` 内嵌文件与 deb 内对应文件**逐字节比对**通过才允许出包。
 
-**实测结果**（2026-11-10）：`verify-repro.sh` 两次完整构建 SHA-256 完全一致 = `67d54667ce3ebc7734151ec621f6ec118a9d760e36d1c48922eb644d79528d70`；`verify-deb.sh` 从该 deb 自解包跑 **57 项断言全部通过、0 失败**（git 预检短路 / 市场主线程解析 / redirect follow / 仅手动安装注入且 AI·CLI 零泄漏 / 前端注入顺序 / 语法 / 32 条转化用例 / 历史回归 / 热修逐字节一致）。此外用 `+ios14` deb 模拟「已装旧版设备」跑 `fix-ios15.sh install` 就地升级成功，`--status` 全绿、`--restore` 可回滚，升级后的 21 个热修覆盖文件与全新 `+ios15` deb **逐字节一致**（唯一不覆盖的是热修脚本自身，符合设计）。`dsh-doctor` 全 26 项中新增的 23~26 项全部 `[ OK ]`。
+**实测结果**（2026-11-12 更新）：`verify-repro.sh` 三次完整构建 SHA-256 完全一致 = `67d54667ce3ebc7734151ec621f6ec118a9d760e36d1c48922eb644d79528d70`（第三层特意把 `bundles/pnpm` 扰动成 664/775 再构建，仍与基准逐字节相同，证明跨 clone/解包方式也 1:1）；`verify-deb.sh` 从该 deb 自解包跑 **57 项断言全部通过、0 失败**（git 预检短路 / 市场主线程解析 / redirect follow / 仅手动安装注入且 AI·CLI 零泄漏 / 前端注入顺序 / 语法 / 32 条转化用例 / 历史回归 / 热修逐字节一致）。此外用 `+ios14` deb 模拟「已装旧版设备」跑 `fix-ios15.sh install` 就地升级成功，`--status` 全绿、`--restore` 可回滚，升级后的 21 个热修覆盖文件与全新 `+ios15` deb **逐字节一致**（唯一不覆盖的是热修脚本自身，符合设计）。`dsh-doctor` 全 26 项中新增的 23~26 项全部 `[ OK ]`。
 
 ### 5. 装到手机（免重传 125MB deb）
 
