@@ -12,6 +12,8 @@ app-bundle/dist/
 # 构建所需的大体积离线二进制（见 README「本仓库内容说明」/ Releases 附件）
 bundles/node-v22.12.0-iphoneos-arm64
 bundles/*.tar.gz
+# bootstrap.sh 断点续传的临时文件（中断后重跑可续传，不应提交）
+bundles/*.download
 
 # +ios12 起已弃用的历史预装插件目录（本版不再预装任何插件）
 bundles/dsh-im-addon/

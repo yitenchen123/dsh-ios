@@ -115,10 +115,16 @@ sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb  # 57 
 
 ```sh
 git clone https://github.com/yitenchen123/dsh-ios && cd dsh-ios
-sh bootstrap.sh        # 从 Releases 下载 2 个大文件，逐个 SHA-256 硬校验放回 bundles/
+sh bootstrap.sh        # 从 Releases 下载 3 个大文件，逐个 SHA-256 硬校验放回 bundles/
 sh build.sh            # 缺大文件会自动调用 bootstrap；全程离线，字节级可复现
 sh verify-repro.sh     # 连跑三次 build（含故意打乱源树 mode）并比对 SHA，证明产物完全一致
 sh verify-deb.sh       # 从交付 deb 自解包做 57 项独立断言（无需 iOS 真机）
+```
+
+`bootstrap.sh` 支持**断点续传**：下载中断会留下 `bundles/<name>.download`，重跑即从断点继续，不会从头重下 101MB（GitHub Release 已实测返回 `HTTP 206 / accept-ranges: bytes`）。弱网或 GitHub 不通时可用镜像源覆盖：
+
+```sh
+DSH_ASSET_BASE_URL=https://your-mirror/releases/download sh bootstrap.sh
 ```
 
 可复现的关键：`build.sh` 把所有 stage 文件 mtime/属主固定到 `SOURCE_DATE_EPOCH`（默认 1700000000）、`dpkg-deb -Zgzip -z9`；**打包前把 stage 内所有文件/目录 mode 按 git 语义归一化**（目录 755、普通文件 owner 有 x → 755 否则 644），消除 `git archive | tar -x`、非标准 umask 造成的 664/775 漂移；`bundles/pnpm` 与全部补丁/热修/前端注入都随 git 跟踪且确定性生成（tar 成员排序、gzip mtime=0）。`fix-ios15.sh` 内嵌文件与 deb 内对应文件**逐字节比对**通过才允许出包。

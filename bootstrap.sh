@@ -10,12 +10,17 @@
 # 之后 sh build.sh 即可完全离线、字节级可复现地重建 +ios15 deb。
 #
 # 用法: sh bootstrap.sh                # 缺什么补什么（已存在且校验通过则跳过）
-#       sh bootstrap.sh --force        # 强制重下
+#       sh bootstrap.sh --force        # 强制重下（清空断点续传缓存）
 #       sh bootstrap.sh --check        # 只校验本地文件，不联网
 #       DSH_VER=0.2.2-rc.1 sh bootstrap.sh   # 下载 0.2.2-rc.1 升级包所需 bundle
+#       DSH_ASSET_BASE_URL=https://mirror.example/releases/download sh bootstrap.sh
+#                                       # 用镜像/代理源代替 GitHub（弱网/被墙时）
+#
+# 断点续传: 下载中断会留下 bundles/<name>.download，重跑本脚本即从断点继续，
+#           不会从头重下 101MB。GitHub Release 已实测支持 Range（HTTP 206）。
 #
 # 依赖: curl 或 wget, sha256sum（或 shasum）
-# 网络: 仅访问 github.com / objects.githubusercontent.com（Release 附件）
+# 网络: 默认仅访问 github.com / release-assets.githubusercontent.com
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -25,6 +30,9 @@ B="$ROOT/bundles"
 # node 二进制是 A11 唯一能跑的 22.12.0；依赖树是打补丁前的原始 0.2.1-rc.5。
 # +ios15 的补丁由 build.sh 在解包后确定性应用，不需要重新生成 bundle。
 ASSET_REPO="${DSH_ASSET_REPO:-yitenchen123/dsh-ios}"
+# 允许整体覆盖下载源（镜像/反代/本地自建源），路径需与 GitHub 的
+# /releases/download/<tag>/<asset> 结构一致。
+ASSET_BASE="${DSH_ASSET_BASE_URL:-https://github.com/${ASSET_REPO}/releases/download}"
 # node 二进制是 A11 唯一能跑的 22.12.0，内容与 +iosXX 轮次无关，固定在旧 tag。
 NODE_TAG="${DSH_NODE_TAG:-v0.2.1-rc.5+ios14}"
 
@@ -74,23 +82,47 @@ verify_one() { # name size sha dest
     return 0
 }
 
+fsize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null || echo 0; }
+
 download_one() { # name size sha dest tag_enc
     _name="$1"; _size="$2"; _want="$3"; _dest="$4"; _tag_enc="$5"
-    _url="https://github.com/${ASSET_REPO}/releases/download/${_tag_enc}/${_name}"
-    _tmp="${_dest}.download.$$"
+    _url="${ASSET_BASE}/${_tag_enc}/${_name}"
+    # 固定临时文件名：中断后重跑能续传，不再用 $$ 每次换名导致进度丢失。
+    _tmp="${_dest}.download"
     echo "    下载 $_name ($_size 字节) ..."
     echo "    $_url"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fL --retry 3 --retry-delay 2 -o "$_tmp" "$_url" || {
-            echo "下载失败: $_name" >&2; rm -f "$_tmp"; exit 1; }
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -O "$_tmp" "$_url" || { echo "下载失败: $_name" >&2; rm -f "$_tmp"; exit 1; }
-    else
-        echo "缺少 curl/wget" >&2; exit 1
-    fi
+    [ "$MODE" = "--force" ] && rm -f "$_tmp"
+
+    # GitHub Release 实测返回 HTTP 206 / accept-ranges: bytes。外层循环反复
+    # 调用 `curl -C -`（或 wget -c），每次重新计算断点偏移；单层 curl --retry
+    # 不会更新偏移，故不能只靠 --retry。40 次仍不完整就保留 .download 退出，
+    # 用户重跑本脚本即可继续，不会丢已下字节。
+    _tries=0
+    while :; do
+        _have=$(fsize "$_tmp")
+        [ "$_have" -ge "$_size" ] && break
+        _tries=$((_tries+1))
+        [ "$_tries" -gt 1 ] && echo "    续传：已有 $_have/$_size 字节（第 $_tries 次尝试）"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fSsL -C - --connect-timeout 20 --max-time 300 \
+                 --retry 1 --retry-delay 2 -o "$_tmp" "$_url" || true
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -c -O "$_tmp" "$_url" || true
+        else
+            echo "缺少 curl/wget" >&2; exit 1
+        fi
+        _now=$(fsize "$_tmp")
+        [ "$_now" -ge "$_size" ] && break
+        if [ "$_tries" -ge 40 ]; then
+            echo "    [FAIL] $_name 多次中断（$_now/$_size 字节）" >&2
+            echo "    已保留 $_tmp；重新运行 sh bootstrap.sh 会从断点继续。" >&2
+            exit 1
+        fi
+    done
     mv "$_tmp" "$_dest"
     if ! verify_one "$_name" "$_size" "$_want" "$_dest"; then
-        echo "    [FAIL] $_name 下载后校验不通过，已删除" >&2; rm -f "$_dest"; exit 1
+        echo "    [FAIL] $_name 下载后校验不通过，已删除（重跑将重新下载）" >&2
+        rm -f "$_dest"; exit 1
     fi
     echo "    [ ok ] $_name 校验通过 (SHA ${_want})"
 }
