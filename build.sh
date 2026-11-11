@@ -1,7 +1,10 @@
 #!/bin/sh
 # build.sh —— 在 Linux/macOS 上组装 rootless .deb（iphoneos-arm64）
 #
-# 产物: dist/dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb
+# 产物: dist/dev.airdevs.dsh_<DSH_VER><IOS_TAG>_iphoneos-arm64.deb
+#   默认 0.2.1-rc.5+ios15（真机 100% 验证过的稳定底座）
+#   DSH_VER=0.2.2-rc.1 sh build.sh  → 0.2.2-rc.1+ios16（最新版 DSH 升级包，
+#   同一套 dsh-iOS 补丁，已过 verify-022.sh 31 项核验）
 # 需求: python3, dpkg-deb, sha256sum；node 仅用于构建期补丁脚本/语法自检
 # 注意: 只在构建机跑，不在 iPhone 上跑；二进制与依赖树均随包固化，全程离线。
 # 可复现: 所有 stage 文件固定 mtime + SOURCE_DATE_EPOCH，dpkg-deb -Zgzip -z9，
@@ -9,7 +12,15 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-DSH_VER=0.2.1-rc.5
+DSH_VER="${DSH_VER:-0.2.1-rc.5}"
+# 版本 → +ios 轮次标记。两个版本共用同一套补丁链路，只换依赖树离线 bundle。
+case "$DSH_VER" in
+    0.2.1-rc.5) IOS_TAG="+ios15"; FIX_NAME="fix-ios15.sh" ;;
+    0.2.2-rc.1) IOS_TAG="+ios16"; FIX_NAME="fix-ios16.sh" ;;
+    *) echo "不支持的 DSH_VER: $DSH_VER（可用 0.2.1-rc.5 / 0.2.2-rc.1）" >&2; exit 1 ;;
+esac
+# bootstrap.sh / verify-repro.sh 等子进程必须看到同一版本，才能下对 bundle。
+export DSH_VER
 # 内置 node：davghz/node22-ios-source 的 v22.12.0，静态链接纯 arm64、标准
 # MAP_JIT、自带完整 JIT entitlements，上游 README 明确标注测试机为
 # "iPhone X (iPhone10,3), iOS 13.2.3" —— 与目标机同款 A11 芯片，真机测过
@@ -25,10 +36,11 @@ DST="$ROOT/dist"
 # 压缩方式：默认 gzip（原大小，兼容性最好）；DEB_COMP=xz 可显著减小体积
 COMP="${DEB_COMP:-gzip}"
 case "$COMP" in
-    xz) ZARGS="-Zxz -z9";  SUF="+ios15xz" ;;
-    *)  ZARGS="-Zgzip -z9"; SUF="+ios15" ;;
+    xz) ZARGS="-Zxz -z9";  SUF="${IOS_TAG}xz" ;;
+    *)  ZARGS="-Zgzip -z9"; SUF="$IOS_TAG" ;;
 esac
 OUT="$DST/dev.airdevs.dsh_${DSH_VER}${SUF}_iphoneos-arm64.deb"
+echo "==> 构建目标: dsh ${DSH_VER}${IOS_TAG} -> $(basename "$OUT")"
 
 for c in python3 dpkg-deb sha256sum; do command -v "$c" >/dev/null 2>&1 || { echo "缺少 $c" >&2; exit 1; }; done
 
@@ -340,6 +352,11 @@ headless 到达模型调用层 (401)、5 个插件全部激活、0 did-not-activ
      历史文件覆盖」。已用 nobody + root 555 树 1:1 复现并验证修复。
 
 TXT
+# README 内写死的 dsh 版本随 DSH_VER 同步（0.2.2 升级包不能还写 0.2.1）
+if [ "$DSH_VER" != "0.2.1-rc.5" ]; then
+    _README="$STAGE/var/jb/usr/lib/dsh/README-shim.txt"
+    sed "s/0\.2\.1-rc\.5/$DSH_VER/g" "$_README" > "$_README.tmp" && mv "$_README.tmp" "$_README"
+fi
 cp "$ROOT/payload/var/jb/usr/bin/dsh" "$STAGE/var/jb/usr/bin/dsh"
 cp "$ROOT/payload/var/jb/usr/bin/dsh-doctor" "$STAGE/var/jb/usr/bin/dsh-doctor"
 cp "$ROOT/payload/var/jb/etc/dsh/dsh.env" "$STAGE/var/jb/etc/dsh/dsh.env"
@@ -381,15 +398,17 @@ for f in dsh-home-heal.cjs dsh-plugin-compat.cjs apply_pnpm_abs_patch.cjs \
 done
 # 热修包每次构建从 payload + shims + 已注入的前端 dist + bundles/pnpm 重新生成，
 # 内嵌文件与 deb 内对应文件字节一致
+FIX_OUT="$DST/$FIX_NAME"
 python3 "$ROOT/shims/make_fix_ios15.py" "$ROOT" \
     "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist" \
-    || { echo "生成 fix-ios15.sh 失败" >&2; exit 1; }
-cp "$ROOT/dist/fix-ios15.sh" "$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh"
-chmod 755 "$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh"
-sh -n "$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh" || { echo "fix-ios15.sh 语法错误" >&2; exit 1; }
+    "$FIX_OUT" \
+    || { echo "生成 $FIX_NAME 失败" >&2; exit 1; }
+cp "$FIX_OUT" "$STAGE/var/jb/usr/lib/dsh/$FIX_NAME"
+chmod 755 "$STAGE/var/jb/usr/lib/dsh/$FIX_NAME"
+sh -n "$STAGE/var/jb/usr/lib/dsh/$FIX_NAME" || { echo "$FIX_NAME 语法错误" >&2; exit 1; }
 
 # 启动链路必须带 sqlite 开关（漏一处就重演 +ios9 整包 import 失败）
-for f in tier.sh fix-session.sh fix-ios15.sh; do
+for f in tier.sh fix-session.sh "$FIX_NAME"; do
     P="$STAGE/var/jb/usr/lib/dsh/$f"
     grep -q -- '--experimental-sqlite' "$P" || \
         { echo "构建中止：$P 缺 --experimental-sqlite" >&2; exit 1; }
@@ -423,10 +442,10 @@ for f in index.js types/operations.js; do
 done
 grep -q -- '--jitless' "$STAGE/var/jb/usr/bin/pnpm" || \
     { echo "构建中止：pnpm wrapper 缺零 JIT 档参数" >&2; exit 1; }
-FIXSH="$STAGE/var/jb/usr/lib/dsh/fix-ios15.sh"
+FIXSH="$STAGE/var/jb/usr/lib/dsh/$FIX_NAME"
 for m in 'dsh-home-heal.cjs' 'apply_pnpm_abs_patch.cjs' 'apply_plugin_install_patch.cjs' \
          'dsh-ios +ios14' 'dsh-ios +ios15' 'dsh-ios-manual-install-transform.js'; do
-    grep -q "$m" "$FIXSH" || { echo "构建中止：fix-ios15.sh 缺 $m" >&2; exit 1; }
+    grep -q "$m" "$FIXSH" || { echo "构建中止：$FIX_NAME 缺 $m" >&2; exit 1; }
 done
 # 源码级标记在压缩 base64 里搜不到，必须真解出内嵌 tar 再校验。
 VT=$(mktemp -d) || exit 1
@@ -470,6 +489,23 @@ chmod 644 "$STAGE/var/jb/usr/lib/dsh/smoke.js" "$STAGE/var/jb/usr/lib/dsh/tier.s
 
 # --- 6. DEBIAN ---
 cp -a "$ROOT/DEBIAN" "$STAGE/DEBIAN"
+# control 的 Version 必须与构建目标一致（0.2.1-rc.5+ios15 / 0.2.2-rc.1+ios16）。
+# 只在 stage 副本上改，仓库里的 DEBIAN/control 仍是稳定底座的默认版本。
+_CONTROL="$STAGE/DEBIAN/control"
+# 关键：0.2.1-rc.5+ios15 是已发布、真机验证过的稳定底座，control 必须保持
+# 与仓库里的 DEBIAN/control 逐字节一致，否则重新构建出的 deb 与已发布 Release
+# 附件 SHA 不同，破坏「别人 clone 后 1:1 重建」的承诺。只有升级包才改 control。
+if [ "$DSH_VER" != "0.2.1-rc.5" ]; then
+    sed "s|^Version: .*|Version: ${DSH_VER}${IOS_TAG}|" "$ROOT/DEBIAN/control" > "$_CONTROL.tmp"
+    mv "$_CONTROL.tmp" "$_CONTROL"
+    # Debian control 的 Description 续行以空格开头，空行写成 " ."
+    cat >> "$_CONTROL" <<EOF
+ .
+ Build: dsh ${DSH_VER} on Node 22.12.0 with dsh-iOS ${IOS_TAG} patches.
+ The 0.2.2-rc.1 build passes verify-022.sh (31 checks incl. real boot,
+ session create and resume) on the same Node 22.12.0 as the device.
+EOF
+fi
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 
 # --- 7. 不重签 node ---

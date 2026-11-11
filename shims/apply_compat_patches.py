@@ -67,11 +67,18 @@ const stripTypeScriptTypes = nodeModuleImpl.stripTypeScriptTypes ?? ((src) => sr
 OLD_COMPRESSION = 'const DEFAULT_COMPRESSION = "zstd";'
 NEW_COMPRESSION = 'const DEFAULT_COMPRESSION = "none";'
 
+# 每项：(相对路径, 原始串, 替换串, 说明, 补丁后独有的幂等标记)
+# marker 用于在「同一棵树被重复打补丁」时判定「已应用」而非「锚点漂移」。
+# 只有 old 命中 0 次且 marker 也不存在时才判定为依赖树变化并中止构建。
 PATCHES = [
-    ("@deepseek-ai/dsh/lib/bin.js", OLD_BIN, NEW_BIN, "import.meta.main"),
-    ("@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js", OLD_ZSTD, NEW_ZSTD, "zstd→gzip"),
-    ("@deepseek-ai/dsh-ptc-runtime-node/lib/index.js", OLD_TS, NEW_TS, "stripTypeScriptTypes"),
-    ("@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js", OLD_COMPRESSION, NEW_COMPRESSION, "会话默认压缩 zstd→none"),
+    ("@deepseek-ai/dsh/lib/bin.js", OLD_BIN, NEW_BIN, "import.meta.main",
+     "await runCli();"),
+    ("@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js", OLD_ZSTD, NEW_ZSTD, "zstd→gzip",
+     "// dsh-iOS compat (Node 22.12): zstd landed in 22.15."),
+    ("@deepseek-ai/dsh-ptc-runtime-node/lib/index.js", OLD_TS, NEW_TS, "stripTypeScriptTypes",
+     "// dsh-iOS compat (Node 22.12): stripTypeScriptTypes landed in 22.13."),
+    ("@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js", OLD_COMPRESSION, NEW_COMPRESSION, "会话默认压缩 zstd→none",
+     'const DEFAULT_COMPRESSION = "none";'),
 ]
 
 
@@ -85,7 +92,7 @@ def main() -> int:
         return 1
 
     ok = True
-    for rel, old, new, label in PATCHES:
+    for rel, old, new, label, marker in PATCHES:
         target = nm / rel
         if not target.is_file():
             print(f"  [FAIL] {label}: 目标文件不存在 {target}", file=sys.stderr)
@@ -93,6 +100,10 @@ def main() -> int:
             continue
         text = target.read_text(encoding="utf-8")
         count = text.count(old)
+        if count == 0 and marker in text:
+            # 同一棵树被重复打补丁（热修 / 二次构建）：补丁已在，安全跳过。
+            print(f"  [ == ] {label}: 已存在（幂等跳过）: {rel}")
+            continue
         if count != 1:
             print(
                 f"  [FAIL] {label}: 期望精确命中 1 次，实际 {count} 次 ({rel})。"

@@ -1,9 +1,13 @@
-# 构建中间产物（1.3G，全部可由 build.sh 重建）
+# 构建中间产物（1.3G，全部可由 build.sh / build-app.sh 重建）
 .build/
+app-bundle/.stage/
+app-bundle/.DSHLauncher.o
 
 # 打包成品与历史归档：118~130MB/个，超过 GitHub 单文件 100MB 硬限
+# 全部作为 Release 附件分发；sh build.sh / sh app-bundle/build-app.sh 可 1:1 重建。
 dist/*.deb
 dist/archive/
+app-bundle/dist/
 
 # 构建所需的大体积离线二进制（见 README「本仓库内容说明」/ Releases 附件）
 bundles/node-v22.12.0-iphoneos-arm64

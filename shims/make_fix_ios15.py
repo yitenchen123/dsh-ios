@@ -359,8 +359,8 @@ exit 0
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit('[FAIL] 用法: make_fix_ios15.py <ROOT> <已注入的 dsh-web-frontend/dist>')
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit('[FAIL] 用法: make_fix_ios15.py <ROOT> <已注入的 dsh-web-frontend/dist> [输出脚本路径]')
     root = Path(sys.argv[1]).resolve()
     front = Path(sys.argv[2]).resolve()
     payload = root / 'payload' / 'var' / 'jb'
@@ -409,7 +409,14 @@ def main():
     print(f'pack: tar {raw.tell()} -> gzip {len(packed)} -> b64 {len(b64)} bytes / pnpm {count} files')
 
     out = HEAD.replace('__B64__', b64)
-    dest = root / 'dist/fix-ios15.sh'
+    if len(sys.argv) == 4:
+        # 0.2.2-rc.1 升级包用 fix-ios16.sh，避免覆盖 0.2.1 稳定包的
+        # dist/fix-ios15.sh（两者内嵌的 web/index.html 来自不同 DSH 版本）。
+        dest = Path(sys.argv[3]).resolve()
+        out = out.replace('fix-ios15.sh', dest.name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        dest = root / 'dist/fix-ios15.sh'
     dest.write_text(out, encoding='utf-8')
     dest.chmod(0o755)
     print(f'written: {dest} ({dest.stat().st_size} bytes)')

@@ -12,6 +12,7 @@
 # 用法: sh bootstrap.sh                # 缺什么补什么（已存在且校验通过则跳过）
 #       sh bootstrap.sh --force        # 强制重下
 #       sh bootstrap.sh --check        # 只校验本地文件，不联网
+#       DSH_VER=0.2.2-rc.1 sh bootstrap.sh   # 下载 0.2.2-rc.1 升级包所需 bundle
 #
 # 依赖: curl 或 wget, sha256sum（或 shasum）
 # 网络: 仅访问 github.com / objects.githubusercontent.com（Release 附件）
@@ -24,22 +25,38 @@ B="$ROOT/bundles"
 # node 二进制是 A11 唯一能跑的 22.12.0；依赖树是打补丁前的原始 0.2.1-rc.5。
 # +ios15 的补丁由 build.sh 在解包后确定性应用，不需要重新生成 bundle。
 ASSET_REPO="${DSH_ASSET_REPO:-yitenchen123/dsh-ios}"
-ASSET_TAG="${DSH_ASSET_TAG:-v0.2.1-rc.5+ios14}"
+# node 二进制是 A11 唯一能跑的 22.12.0，内容与 +iosXX 轮次无关，固定在旧 tag。
+NODE_TAG="${DSH_NODE_TAG:-v0.2.1-rc.5+ios14}"
 
-# 文件名 | 大小(字节) | SHA-256 | 落地路径
+# 构建版本 → 对应依赖树 bundle 与它所在的 Release tag。
+# 两个 bundle 都是「官方原始源码 + 2 个纯 JS addon shim + 0 个 .node」，
+# 补丁由 build.sh 在解包后确定性应用，所以内容不会随 +iosXX 轮次变化。
+DSH_VER="${DSH_VER:-0.2.1-rc.5}"
+case "$DSH_VER" in
+    0.2.1-rc.5)
+        BUNDLE_NAME="dsh-nodemodules-0.2.1-rc.5+ios1.tar.gz"
+        BUNDLE_SIZE="88421378"
+        BUNDLE_SHA="b69675d9a8ac51a844051c24a3132d05bdd57d015ca2cd4bf9e815a04174c55c"
+        BUNDLE_TAG="${DSH_BUNDLE_TAG:-v0.2.1-rc.5+ios14}" ;;
+    0.2.2-rc.1)
+        BUNDLE_NAME="dsh-nodemodules-0.2.2-rc.1+ios1.tar.gz"
+        BUNDLE_SIZE="90992091"
+        BUNDLE_SHA="c21c84efbbab551b70a90516034a96aff74ad019068a9f855e8eb63dda54caa0"
+        BUNDLE_TAG="${DSH_BUNDLE_TAG:-v0.2.2-rc.1+ios16}" ;;
+    *) echo "不支持的 DSH_VER: $DSH_VER（可用 0.2.1-rc.5 / 0.2.2-rc.1）" >&2; exit 1 ;;
+esac
+
 NODE_NAME="node-v22.12.0-iphoneos-arm64"
 NODE_SIZE="101297040"
 NODE_SHA="f091585d9e3d63b2d8be1fadc17068a21d42d6b2912304462b8dca41a8cfc163"
-BUNDLE_NAME="dsh-nodemodules-0.2.1-rc.5+ios1.tar.gz"
-BUNDLE_SIZE="88421378"
-BUNDLE_SHA="b69675d9a8ac51a844051c24a3132d05bdd57d015ca2cd4bf9e815a04174c55c"
 
 MODE="${1:-install}"
 [ "$MODE" = "--force" ] || [ "$MODE" = "--check" ] || [ "$MODE" = "install" ] || [ "$MODE" = "" ] || {
     echo "未知参数: $MODE（可用 --force / --check）" >&2; exit 1; }
 
-# URL 里 '+' 必须编码成 %2B，否则 GitHub 返回 404
-TAG_ENC=$(printf '%s' "$ASSET_TAG" | sed 's/+/%2B/g')
+# URL 里 '+' 必须编码成 %2B，否则 GitHub 返回 404。每个附件可有独立 tag。
+NODE_TAG_ENC=$(printf '%s' "$NODE_TAG" | sed 's/+/%2B/g')
+BUNDLE_TAG_ENC=$(printf '%s' "$BUNDLE_TAG" | sed 's/+/%2B/g')
 
 sha() { # 跨平台 sha256
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -57,9 +74,9 @@ verify_one() { # name size sha dest
     return 0
 }
 
-download_one() { # name size sha dest
-    _name="$1"; _size="$2"; _want="$3"; _dest="$4"
-    _url="https://github.com/${ASSET_REPO}/releases/download/${TAG_ENC}/${_name}"
+download_one() { # name size sha dest tag_enc
+    _name="$1"; _size="$2"; _want="$3"; _dest="$4"; _tag_enc="$5"
+    _url="https://github.com/${ASSET_REPO}/releases/download/${_tag_enc}/${_name}"
     _tmp="${_dest}.download.$$"
     echo "    下载 $_name ($_size 字节) ..."
     echo "    $_url"
@@ -80,9 +97,9 @@ download_one() { # name size sha dest
 
 mkdir -p "$B"
 FAIL=0
-for spec in "$NODE_NAME|$NODE_SIZE|$NODE_SHA|$B/$NODE_NAME" \
-            "$BUNDLE_NAME|$BUNDLE_SIZE|$BUNDLE_SHA|$B/$BUNDLE_NAME"; do
-    IFS='|' read -r name size want dest <<EOF
+for spec in "$NODE_NAME|$NODE_SIZE|$NODE_SHA|$B/$NODE_NAME|$NODE_TAG_ENC" \
+            "$BUNDLE_NAME|$BUNDLE_SIZE|$BUNDLE_SHA|$B/$BUNDLE_NAME|$BUNDLE_TAG_ENC"; do
+    IFS='|' read -r name size want dest tag_enc <<EOF
 $spec
 EOF
     echo "==> $name"
@@ -94,7 +111,7 @@ EOF
         echo "    [ == ] 已存在且校验通过，跳过"
         continue
     fi
-    download_one "$name" "$size" "$want" "$dest"
+    download_one "$name" "$size" "$want" "$dest" "$tag_enc"
 done
 
 # pnpm 是纯 JS、已被 git 跟踪，但要确认关键文件在

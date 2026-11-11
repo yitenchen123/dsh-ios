@@ -12,12 +12,20 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT"
 
+# 支持两个构建版本；DSH_VER 会传给 bootstrap.sh 与 build.sh。
+DSH_VER="${DSH_VER:-0.2.1-rc.5}"
+case "$DSH_VER" in
+    0.2.1-rc.5) IOS_TAG="+ios15" ;;
+    0.2.2-rc.1) IOS_TAG="+ios16" ;;
+    *) echo "不支持的 DSH_VER: $DSH_VER" >&2; exit 1 ;;
+esac
+export DSH_VER
 SUF="${DEB_COMP:-gzip}"
 case "$SUF" in
-    xz) SUFFIX="+ios15xz" ;;
-    *)  SUFFIX="+ios15" ;;
+    xz) SUFFIX="${IOS_TAG}xz" ;;
+    *)  SUFFIX="$IOS_TAG" ;;
 esac
-OUT="dist/dev.airdevs.dsh_0.2.1-rc.5${SUFFIX}_iphoneos-arm64.deb"
+OUT="dist/dev.airdevs.dsh_${DSH_VER}${SUFFIX}_iphoneos-arm64.deb"
 
 echo "=== 1) 前置：确保构建大文件齐备（SHA 校验，缺则下载）==="
 sh "$ROOT/bootstrap.sh" --check || sh "$ROOT/bootstrap.sh"

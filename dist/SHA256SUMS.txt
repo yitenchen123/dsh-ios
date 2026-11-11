@@ -1,14 +1,32 @@
-# +ios15 交付物 SHA-256
-# 生成时间: 2026-11-10 15:53 UTC
-# 版本: dsh 0.2.1-rc.5（保持稳定底座，不升级）/ Node 22.12.0 / +ios15
+# dsh-ios 交付物 SHA-256
+# 生成时间: 2026-11-11 UTC
+# 稳定底座: dsh 0.2.1-rc.5 / Node 22.12.0 / +ios15（真机验证，交付物字节未变）
+# 新增 +ios16: dsh 0.2.2-rc.1 可选升级包 / 桌面 APP + 保活 + 手机操控工具链
 # 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
-#       （两次完整构建 SHA 完全一致，见下方 deb 行）
-# 独立核验: sh verify-deb.sh  （从交付 deb 自解包，57 项断言，无需 iOS 真机）
+#       DSH_VER=0.2.2-rc.1 sh bootstrap.sh && DSH_VER=0.2.2-rc.1 sh build.sh
+#       sh app-bundle/build-app.sh && sh app-bundle/verify-app.sh
+# 独立核验: sh verify-deb.sh [deb路径]          两个 deb 各 57 项
+#           sh verify-022.sh <tree> <node22.12>  0.2.2 树 31 项（含真 boot）
+#           sh app-bundle/verify-app.sh           APP 包 73 项
+#           sh phone-bridge/verify-phone-bridge.sh 工具链 28 项
+#           sh verify-phone-control.sh           旧接入方案 25 项
 # 一键校验: cd dist && sha256sum -c SHA256SUMS.txt
-#           （下方两个大文件在 ../bundles/，全新 clone 后先跑 sh bootstrap.sh 下载）
-# 推荐: fix-ios15.sh（4.9MB 免重传已装 +ios14 的设备）或 +ios15 deb（全新安装）
+#           （../bundles 与 ../app-bundle/dist 的文件在全新 clone 后需先跑
+#             sh bootstrap.sh / sh app-bundle/build-app.sh 生成）
+
+# --- 稳定底座 +ios15（未变）---
 67d54667ce3ebc7734151ec621f6ec118a9d760e36d1c48922eb644d79528d70  dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb
 4ff34b64ff7f9cba88c6957edbae217e0040bcf75a8a98bcde3de3b06dc3704f  fix-ios15.sh
+
+# --- +ios16 新增：最新版 DSH 0.2.2-rc.1 可选升级包 ---
+f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb
+9497ba9807c8ec274b650852b4cd9d682b35b5d8672069650669960e28166a1a  fix-ios16.sh
+
+# --- +ios16 新增：桌面 APP / launchd 保活 / 内置手机工具链 ---
+878642fa57a8f97abd413f2578235d5dcdcc64466e4d76bc86107bd6a48e67a4  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.1-rc.5+ios16_iphoneos-arm64.deb
+
+# --- 可选生态插件（手动安装，不预装）---
+f9f74e0f485148acfe544b88e35c17da196b6ff4c6da4f7a6576a7c566cd068a  dsh-ios-phone-control-0.1.0.tgz
 
 # --- 历史热修（保留供旧设备就地修复/回滚）---
 40de70df194183f77f6796a3bc942e3573d39f001b0e874fece61d269bdb9d13  fix-ios14.sh
@@ -20,3 +38,4 @@ dcf31388bd5ee542a2b0e75d9d292141fb73266f467aa4ffbbd344d032c3212c  fix-transport.
 # --- bootstrap.sh 下载的大文件校验值（路径相对 dist/，文件在 ../bundles/）---
 f091585d9e3d63b2d8be1fadc17068a21d42d6b2912304462b8dca41a8cfc163  ../bundles/node-v22.12.0-iphoneos-arm64
 b69675d9a8ac51a844051c24a3132d05bdd57d015ca2cd4bf9e815a04174c55c  ../bundles/dsh-nodemodules-0.2.1-rc.5+ios1.tar.gz
+c21c84efbbab551b70a90516034a96aff74ad019068a9f855e8eb63dda54caa0  ../bundles/dsh-nodemodules-0.2.2-rc.1+ios1.tar.gz

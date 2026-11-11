@@ -7,15 +7,22 @@
 # dpkg-deb -x 解出来的文件树逐项断言；语法/功能检查用宿主机 node 真跑，
 # 因此可在任何 Linux/macOS 上离线验证，不需要 iOS 真机。
 #
-# 用法: sh verify-deb.sh [deb路径] [fix-ios15.sh路径]
+# 用法: sh verify-deb.sh [deb路径] [热修脚本路径]
 #   默认: dist/dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb
-#         dist/fix-ios15.sh
+#         dist/fix-ios15.sh（deb 名含 0.2.2-rc.1 时自动改为 fix-ios16.sh）
+#   0.2.2: sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb
 # 退出码 0 = 全部通过；非 0 = 有 [FAIL]。
 # ============================================================================
 set -u
 ROOT_DIR=$(cd "$(dirname "$0")" && pwd)
 DEB="${1:-$ROOT_DIR/dist/dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb}"
-FIXSH="${2:-$ROOT_DIR/dist/fix-ios15.sh}"
+# 0.2.2 升级包内的热修叫 fix-ios16.sh（内嵌的前端 index.html 来自 0.2.2），
+# 不能与 0.2.1 稳定包的 dist/fix-ios15.sh 混用。
+case "$DEB" in
+    *0.2.2-rc.1*) DEFAULT_FIX="$ROOT_DIR/dist/fix-ios16.sh" ;;
+    *)            DEFAULT_FIX="$ROOT_DIR/dist/fix-ios15.sh" ;;
+esac
+FIXSH="${2:-$DEFAULT_FIX}"
 NODE="${DSH_NODE:-$(command -v node)}"
 
 [ -f "$DEB" ]   || { echo "找不到 deb: $DEB" >&2; exit 2; }
@@ -31,6 +38,10 @@ ROOT="$TMP/var/jb"
 D="$ROOT/usr/lib/dsh"
 NM="$D/node_modules"
 FRONT="$NM/@deepseek-ai/dsh-web-frontend/dist"
+# 热修文件名随 DSH 版本变化（0.2.1 → fix-ios15.sh / 0.2.2 → fix-ios16.sh）
+FIXNAME=$(basename "$(find "$D" -maxdepth 1 -name 'fix-ios*.sh' 2>/dev/null | head -1)")
+[ -n "$FIXNAME" ] || { echo "deb 内找不到 fix-ios*.sh" >&2; exit 2; }
+echo "=== 包内热修: $FIXNAME ==="
 PASS=0; FAIL=0
 ok(){  printf '  [ OK ] %s\n' "$1"; PASS=$((PASS+1)); }
 bad(){ printf '  [FAIL] %s\n' "$1"; FAIL=$((FAIL+1)); }
@@ -52,7 +63,7 @@ echo "--- A. 关键文件存在性 ---"
 for f in "$PM" "$MK" "$WP" "$CJS" "$TOOLS" "$OPS" \
          "$D/apply_plugin_install_patch.cjs" "$D/apply_frontend_inject.cjs" \
          "$D/safari16-polyfill.js" "$D/dsh-ios-manual-install-transform.js" \
-         "$D/fix-ios15.sh" "$FRONT/index.html" \
+         "$D/$FIXNAME" "$FRONT/index.html" \
          "$FRONT/assets/safari16-polyfill.js" \
          "$FRONT/assets/dsh-ios-manual-install-transform.js" \
          "$ROOT/usr/bin/dsh" "$ROOT/usr/bin/dsh-doctor" "$ROOT/usr/bin/pnpm"; do
@@ -178,8 +189,8 @@ if [ -f "$NM/@xmanrui/dsh-im/lib/index.js" ] || [ -f "$NM/@tencent-connect/dsh-q
 
 echo "--- I. 热修脚本一致性 ---"
 [ -f "$FIXSH" ] || bad "缺 dist 交付件 $FIXSH"
-same "$D/fix-ios15.sh" "$FIXSH" && ok "deb 内 fix-ios15.sh 与 dist 交付件逐字节一致" || bad "deb 内热修与交付件不一致"
-if sh -n "$D/fix-ios15.sh" 2>/dev/null; then ok "fix-ios15.sh 通过 sh -n"; else bad "fix-ios15.sh 语法错误"; fi
+same "$D/$FIXNAME" "$FIXSH" && ok "deb 内 $FIXNAME 与 dist 交付件逐字节一致" || bad "deb 内热修与交付件不一致"
+if sh -n "$D/$FIXNAME" 2>/dev/null; then ok "$FIXNAME 通过 sh -n"; else bad "$FIXNAME 语法错误"; fi
 
 echo
 echo "=== 汇总: OK=$PASS  FAIL=$FAIL ==="
