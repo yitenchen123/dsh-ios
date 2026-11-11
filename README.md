@@ -3,7 +3,77 @@
 **做成 rootless 越狱包（.deb），装完在终端敲 `dsh` 直接启动。** 不走 Air2，不需要 WKWebView，不需要 iSH 模拟器，不需要 TrollStore，不装系统 node。
 
 > 目标机：iPhone X (iPhone10,3), A11 **arm64**, iOS **16.7.15**, Dopamine 3.0 rootless (`/var/jb`)。
-> 当前版本 **`+ios15`**：修好「点击插件 → 安装插件」里所有手动方式（AI 帮你装本来就成功）、修好「插件市场加载失败一堆报错」、给生态插件加仅手动安装生效的转化逻辑、并让 GitHub 仓库可 1:1 字节级复现构建。dsh 版本保持 **0.2.1-rc.5**、内置 node 保持 **22.12.0**（A11 唯一 100% 能跑的组合）。最后阶段的「新 Node / 最新版 DSH」评估**已完成**：查无「和 22.12.0 一样 100% 能用、又原生适配最新版 DSH」的 iOS arm64 Node，维持现底座不升级，详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。此前 14 轮修复全部保留并回归。
+> **稳定底座 `+ios15`**（默认、真机验证过）：修好「点击插件 → 安装插件」里所有手动方式、修好「插件市场加载失败一堆报错」、给生态插件加仅手动安装生效的转化逻辑、并让 GitHub 仓库可 1:1 字节级复现构建。dsh **0.2.1-rc.5** + 内置 node **22.12.0**，交付 deb 与热修的 SHA 保持不变。此前 14 轮修复全部保留并回归。
+> **本次新增 `+ios16` 交付**（见下一章）：① `0.2.2-rc.1` 最新版 DSH 可选升级包；② `dev.airdevs.dsh-app` —— UTM 式「把 .app 做成 deb」的桌面 APP + launchd 保活；③ 内置的手机操控工具链，启动 DSH 即可直接调用 `mcp__ios__*` 工具。
+> 关于 Node 24.9：公开可得的 **iOS arm64 Node 可执行文件仍不存在**（详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)），但实证发现官方 `0.2.2-rc.1` 的四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，因此用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 31 项核验（含真 boot、会话创建与恢复）的完整升级包。
+
+---
+
+## 本次新增交付 · `+ios16`：最新版 DSH / 桌面 APP / 保活 / 手机工具链
+
+按「我的要求你要全部达到」逐项落地。全部是新增产物，**稳定底座 `+ios15` 的 deb 与热修字节未变**（仍为 `67d54667…` / `4ff34b64…`）。
+
+### 1. 桌面 APP：UTM / JBDev 式「把 .app 做成 deb」
+
+`app-bundle/dist/dev.airdevs.dsh-app_0.2.1-rc.5+ios16_iphoneos-arm64.deb`（约 26KB）装完：
+
+- `.app` 放 `/var/jb/Applications/DSH.app`，`Info.plist` 指定 `CFBundleExecutable=DSHLauncher`；
+- **签名问题自行解决**：构建期 `ld.lld -adhoc_codesign` 写入 `LC_CODE_SIGNATURE`，设备端 `postinst` 再用 `ldid -S<entitlements.plist>` 伪签（`platform-application` / `no-sandbox`），**不需要 Apple 开发者证书**；`uicache` 注册桌面图标。
+- launcher 是 `clang + ld.lld` 交叉编译的 iOS arm64 Mach-O（`-pie -no_uuid -adhoc_codesign`），无需 macOS / Xcode；点图标 `execve` 进 `dsh-app-ui`，只负责打开 Web UI，DSH 本体在 daemon 里。
+
+### 2. 保活：终端被杀也不影响
+
+`dev.airdevs.dsh.plist` + `dsh-daemon` 由 launchd 以 `RunAtLoad + KeepAlive + ThrottleInterval=10` 常驻，`UserName=mobile`（避免 root 属主触发 EACCES）。终端被系统杀掉、DSH 被 jetsam 杀掉都会立即拉起；点 APP 图标只是打开 UI，**不再需要重新敲 `dsh`**。管理命令 `dsh-app-ctl status|ensure|restart|log|enable|disable|register`。
+
+### 3. 最新版 DSH `0.2.2-rc.1`（可选升级包）
+
+```sh
+DSH_VER=0.2.2-rc.1 sh bootstrap.sh      # 下载 0.2.2 依赖树 bundle（SHA 硬校验）
+DSH_VER=0.2.2-rc.1 sh build.sh          # 产出 dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb
+DSH_VER=0.2.2-rc.1 sh verify-repro.sh   # 两次构建字节一致
+sh verify-022.sh .build/stage/var/jb/usr/lib/dsh /path/to/node-22.12.0  # 31 项核验
+sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb  # 57 项
+```
+
+**关键实证**：从 npm 下载官方 `0.2.2-rc.1` 原始 tarball 逐文件比对后确认，`@deepseek-ai/dsh/lib/bin.js` 的 `import.meta.main`、session 的 zstd import 与 `DEFAULT_COMPRESSION="zstd"`、ptc-runtime 的 `stripTypeScriptTypes` —— **四处锚点与 0.2.1-rc.5 完全相同**。所以 `+ios15` 全套补丁（compat / pnpm 直连 / 手动安装 / 插件市场 / 前端注入）在官方原始 0.2.2 树上**从零逐项精确命中**，`engines.node >=24.9.0` 是 advisory 而非硬阻断。
+
+`verify-022.sh` 用**与真机同版本的 Node 22.12.0 + 零 JIT 档**实测：
+
+| 项 | 结果 |
+|---|---|
+| `--version` / `web --dump-config` / `headless --help` | 全部 RC=0，版本 `0.2.2-rc.1` |
+| `web --no-open` 真监听 | 进程存活、HTTP 有响应 |
+| `headless "ping"` 真 boot | 到模型层（仅缺 API key），**无 SIGBUS / 段错误** |
+| 会话创建 / 恢复 | `session.v4.jsonl` 生成且可读回，无 `zstd/corrupt` |
+| 硬约束 | AI/CLI 路径 0 个转化钩子泄漏；`cordis.patch.yml` 顶层均为数组 |
+
+共 **31 项 0 失败**；`verify-deb.sh` 对两个 deb 各 **57 项 0 失败**；两个版本各自 `verify-repro.sh` 两次构建 SHA 完全一致。配套 `dist/fix-ios16.sh` 是 0.2.2 包的热修（单独命名，不覆盖 0.2.1 的 `fix-ios15.sh`）。
+
+> 诚实边界：沙箱里没有 A11 真机，无法验证 ldid 伪签后 APP 启动、`uicache` 注册、launchd `bootstrap`、ios-mcp 的 HID 注入。Node 24.9 的 iOS 可执行文件也不存在，本方案是「同一已验证 Node + 官方最新 DSH + 实测通过的补丁」，不是原生 Node 24。
+
+### 4. 手机操控：启动 DSH 就能直接调用工具链
+
+原先需要用户另装第三方 `witchan/ios-mcp` 再手动装配置插件；现在 `dev.airdevs.dsh-app` 内置一套**纯 Node MCP 服务**并自动注册：
+
+- `dev.airdevs.dsh.phone-bridge` 是独立 LaunchDaemon（`RunAtLoad + KeepAlive`），监听 `127.0.0.1:8091/mcp`（不抢 ios-mcp 的 8090）；
+- `ensure-config.cjs` 在 daemon 启动时以 **mobile 身份**幂等把 `@deepseek-ai/dsh-mcp-client` 写进 `$DSH_HOME` 的 patch 层，保持顶层数组合法（不重演真机 fatal）；
+- **A 层开箱即用**：`get_device_info`、`run_command`、`read_file` / `write_file` / `list_dir`、`list_apps`、`launch_app`、`open_url`、`list_processes`、`get_syslog`、`dsh_status`、`phone_bridge_status`；
+- **B 层自动合并**：设备上装了 `witchan/ios-mcp`（8090）时，`screenshot` / `tap_screen` / `get_ui_elements` / `ocr_screen` 等工具会合并进 `tools/list` 并原样转发；没装时给出明确安装指引，不影响 A 层。
+
+验证：`sh phone-bridge/verify-phone-bridge.sh` **28 项 0 失败** —— 包内 `@modelcontextprotocol/client` 真握手、`tools/call` 真执行 shell / 读写文件、假上游 B 层合并与转发、`Config` schema 校验、幂等注册、零 JIT 档启动。设备端命令 `dsh-phone-bridge-ctl status|tools|config-on|config-off|enable|disable|log`；关闭自动注册用 `config-off`，配置层不会被自愈脚本误删。详见 [`docs/IOS-PHONE-CONTROL.md`](docs/IOS-PHONE-CONTROL.md)。
+
+### 5. 交付物与校验值
+
+| 文件 | 用途 |
+|---|---|
+| `dist/dev.airdevs.dsh_0.2.1-rc.5+ios15_iphoneos-arm64.deb` | 稳定底座（未变） |
+| `dist/fix-ios15.sh` | 稳定底座热修（未变） |
+| `dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb` | 最新版 DSH 可选升级包 |
+| `dist/fix-ios16.sh` | 0.2.2 包的热修 |
+| `app-bundle/dist/dev.airdevs.dsh-app_0.2.1-rc.5+ios16_iphoneos-arm64.deb` | 桌面 APP + 保活 + 手机工具链 |
+| `bundles/dsh-nodemodules-0.2.2-rc.1+ios1.tar.gz` | 0.2.2 官方原始依赖树（bootstrap 自动下载） |
+
+`sh verify-app.sh` **73 项 0 失败**（含工具链 16 项与主 deb SHA 未变断言），两次构建字节一致。完整校验值见 `dist/SHA256SUMS.txt`。
 
 ---
 
@@ -67,7 +137,7 @@ sh fix-ios15.sh --restore    # 回滚启动文件（用户数据不动）
 
 `dsh-doctor` 新增 **23~26 项**：git 预检短路 / 插件市场主线程解析 / 手动转化钩子（并核验不泄漏到 AI 路径）/ 扩展垫片语法，缺任一项都会尝试就地自愈再复检。
 
-> 关于「更新 DSH 到最新版」（**最后阶段评估已完成**）：官方 `0.2.2-rc.1` 的 `engines.node >= 24.9.0`（且依赖 `import.meta.main`，Node 24.0 都不够），而 A11 上 100% 能用的只有包内 22.12.0。打兼容补丁后 0.2.2-rc.1 在 22.12.0 上 `--version` / `web` 真监听 / `headless` 真 boot 全通，但那属于"靠 shim 绕过"而非原生适配，不满足用户的硬条件，且会让已装插件 `runtimeVersion` 豁免失效、需重传整包。公开可得的 iOS arm64 Node 最高只到**经真机验证的 Node 22.x**（且验证机型是 A9 / iOS 15.8.5，非本项目 A11 / iOS 16.7.15）；**Node 24.9.0 的 iOS 可执行文件不存在**。结论：**维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15` 不升级**。完整判据、候选对照表与"未来什么条件下才升"的 5 条门槛见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。
+> 关于「更新 DSH 到最新版」：**默认底座仍维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`**，但本次已额外交付经过 31 项核验的 `0.2.2-rc.1+ios16` 可选升级包（见上章）。官方 `engines.node >= 24.9.0` 是 advisory；实证确认其四处 Node 22.12 兼容补丁锚点与 0.2.1 逐字一致，同一套补丁 + 同一个已验证 Node 22.12.0 下真 boot、web 监听、会话创建与恢复全通。**Node 24.9.0 的 iOS arm64 可执行文件仍不存在**（公开可得最高是经真机验证的 Node 22.x，且机型为 A9 / iOS 15.8.5，非本项目 A11 / iOS 16.7.15），所以不换 Node 二进制。升级是可选的，已知代价：已装插件的 `runtimeVersion` 豁免需复核、rc 版本可能有破坏性变更、需重传整包。完整判据、候选对照表与"未来什么条件下才升"的门槛见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。
 
 ---
 

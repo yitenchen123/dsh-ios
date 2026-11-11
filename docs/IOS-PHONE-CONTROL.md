@@ -6,6 +6,40 @@
 
 ---
 
+## 0. `+ios16` 更新：不再需要手动装插件，启动 DSH 即可调用工具链
+
+上面第 6 节的「落地步骤」是 **+ios15 时代的方案**：用户要先装第三方 `witchan/ios-mcp`、再手动装 `dsh-ios-phone-control` 配置插件。用户后来明确要求「**启动 DSH 让 DSH 操作手机，它能够直接调用相关工具链操作**」，所以 `dev.airdevs.dsh-app` 包现在**内置**了一整套工具链：
+
+| 层 | 实现 | 开箱即用 |
+|---|---|---|
+| **A 层**（本机能力） | 包内纯 Node MCP 服务 `phone-bridge/server.cjs`，监听 `127.0.0.1:8091/mcp` | ✅ 设备信息、shell、读写文件、目录、App 列表/启动、URL scheme、进程、syslog、DSH 状态、bridge 状态 |
+| **B 层**（看屏幕 / 点屏幕 / UI 树 / OCR / 剪贴板 / 亮度音量） | 自动转发到设备上 `witchan/ios-mcp` 的 `127.0.0.1:8090/mcp`；在线时工具合并进 `tools/list`，`tools/call` 原样转发 | ⚠️ 需自行装第三方原生 deb（真 HID 注入无法用纯 JS 实现） |
+| **注册** | `ensure-config.cjs` 由 bridge daemon 以 **mobile 身份**幂等把 `@deepseek-ai/dsh-mcp-client` 写进 `$DSH_HOME` 的 `cordis.patch.yml`，顶层保持合法数组 | ✅ 装完 APP 包即生效，无需手动改配置 |
+
+关键点：
+
+- bridge 是**独立 LaunchDaemon**（`dev.airdevs.dsh.phone-bridge`，`RunAtLoad + KeepAlive`），与 DSH 本体解耦：终端被杀、DSH 重启、点 APP 图标，工具链都还在。
+- 固定 `8091` 是为了**不抢占** ios-mcp 默认的 `8090`；旧的 `dsh-ios-phone-control` 插件（直连 8090）仍可独立使用，但不要和内置注册同时启用（两者 `serverName` 都是 `ios`）。
+- 配置注册用 mobile 身份写，避免 +ios12 真机踩过的 root 属主 → EACCES；自愈脚本 `dsh-home-heal.cjs` 只删两个旧 IM 插件块，不会误删本工具链。
+- **主 deb 完全没动**：工具链全部在 `app-bundle/` 里，`+ios15` 交付 deb 与热修 SHA 保持不变。
+
+设备端命令：
+
+```sh
+dsh-phone-bridge-ctl status          # daemon / health / patch 注册状态
+dsh-phone-bridge-ctl tools           # 列出当前可用工具（含上游合并的）
+dsh-phone-bridge-ctl health          # /health 探活
+dsh-phone-bridge-ctl config-off      # 关闭自动注册（保留用户其它 patch 块）
+dsh-phone-bridge-ctl disable         # 停用 daemon
+dsh-phone-bridge-ctl log             # 看日志
+```
+
+验证：`sh phone-bridge/verify-phone-bridge.sh` **28 项 0 失败** —— 包内 `@modelcontextprotocol/client` 真完成 `initialize` + `tools/list`，`tools/call` 真执行 shell / 读写文件往返，假上游 ios-mcp 的 `tap_screen` / `screenshot` 合并并原样转发返回，`dsh-mcp-client` 的 `Config` schema 校验通过，注册幂等且 `off` 后回落 `[]`，零 JIT 档（`--jitless` + `fetch-shim`）下同样可启动。`sh app-bundle/verify-app.sh` 另有 16 项工具链断言，合计 **73 项 0 失败**。
+
+> 仍然存在的边界：真·触控注入、截图、OCR 必须由 `witchan/ios-mcp` 的原生实现提供（纯 JS 拿不到 IOHIDEvent / SpringBoard XPC）；本项目不分发、不修改它。A 层工具已能让 AI 完成「装 → 打开 → 跑命令 → 读日志」的自动测试闭环。
+
+---
+
 ## 1. 先纠正上一轮的两个判断
 
 在查到 `witchan/ios-mcp` 之前，我基于「iOS 没有 Android 无障碍服务」给出的判断偏保守，这里更正：
@@ -250,13 +284,21 @@ get_syslog / get_crash_logs 看有没有崩
 
 ## 12. 不预装声明
 
-用户此前明确要求「所有插件是 DSH 的生态插件，不是包里自带的」「不要整默认自带两个插件」。本方案严格遵守：
+用户此前明确要求「所有插件是 DSH 的生态插件，不是包里自带的」「不要整默认自带两个插件」。这里把**插件**和**工具链**分开，两条约束都成立：
 
-- `plugins/dsh-ios-phone-control/` **不在** `payload/` 里，不进 deb，不预装；
-- `iOS MCP` 是用户自行安装的第三方 deb，本仓库不分发；
-- 不改 `+ios15` 已发布的 deb（`SHA256SUMS.txt` 不变）；
+**生态插件（仍然零预装）**
+
+- `plugins/dsh-ios-phone-control/` **不在**主包 `payload/` 里，不进主 deb，不预装；
+- `iOS MCP` 是用户自行安装的第三方 deb，本仓库不分发、不修改；
 - 不改 `tools.js` / `operations.js`，AI 帮你装与 CLI 路径不受影响；
-- 走的是 +ios15 刚修好的**手动安装**链路，正好复用那套修复成果。
+- 旧方案走的是 +ios15 修好的**手动安装**链路。
+
+**工具链（`+ios16` 新增，用户明确要求「启动 DSH 就能直接调用」）**
+
+- `dev.airdevs.dsh-app` 内置的是**本机 MCP 服务 + 一条 MCP 客户端配置**，不是第三方生态插件：`@deepseek-ai/dsh-mcp-client` 本来就在依赖树里，配置写进用户自己的 `cordis.patch.yml` patch 层（可 `config-off` 移除）。
+- 它和「默认自带 `dsh-im` / `dsh-qqbot` 两个插件」不是一回事：那两个是 IM 机器人插件，会占会话、要凭据、会「未运行」；工具链是纯能力注册，不产生任何会话或后台插件进程。
+- 全部新增文件都在 `app-bundle/` 与 `phone-bridge/`，**主包 `payload/` 一行未动**，`+ios15` 交付 deb 与热修 SHA 保持不变。
+- 不需要时可完全关闭：`dsh-phone-bridge-ctl config-off && dsh-phone-bridge-ctl disable`，卸载 APP 包时 `prerm` 自动执行。
 
 ---
 
