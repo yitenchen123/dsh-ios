@@ -1,0 +1,11 @@
+# Node 24 实验包校验清单（独立于 dist/SHA256SUMS.txt）
+#
+# 状态：实验 deb 【PENDING】—— 需 GitHub Actions `node24-jitless.yml` 编译出
+#       真实 iOS arm64 node 二进制后，用 node24/build-experimental-deb.sh 组装。
+#       本清单绝不列占位/截断的假 deb；组装脚本已加 >=20MB 最小尺寸防护。
+#
+# 已就绪：dsh 0.2.2-rc.2 纯 JS 依赖树（661 包 / 0 个 .node /
+#         6 项补丁锚点全绿 / 2000 个 JS 文件语法 0 错误），
+#         由 node24/make-rc2-tree.sh 可复现生成。
+# 默认 +ios15 / +ios16 / APP 三个 deb 的 SHA 见 dist/SHA256SUMS.txt，未改动。
+e2f87256ca694259341a232eab89884dae492423c5c3cc6be4a06abf9acbe70a  dsh-nodemodules-0.2.2-rc.2+ios1.tar.gz

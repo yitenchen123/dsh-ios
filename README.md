@@ -5,7 +5,21 @@
 > 目标机：iPhone X (iPhone10,3), A11 **arm64**, iOS **16.7.15**, Dopamine 3.0 rootless (`/var/jb`)。
 > **稳定底座 `+ios15`**（默认、真机验证过）：修好「点击插件 → 安装插件」里所有手动方式、修好「插件市场加载失败一堆报错」、给生态插件加仅手动安装生效的转化逻辑、并让 GitHub 仓库可 1:1 字节级复现构建。dsh **0.2.1-rc.5** + 内置 node **22.12.0**，交付 deb 与热修的 SHA 保持不变。此前 14 轮修复全部保留并回归。
 > **本次新增 `+ios16` 交付**（见下一章）：① `0.2.2-rc.1` 最新版 DSH 可选升级包；② `dev.airdevs.dsh-app` —— UTM 式「把 .app 做成 deb」的桌面 APP + launchd 保活；③ 内置的手机操控工具链，启动 DSH 即可直接调用 `mcp__ios__*` 工具。
-> 关于 Node 24.9：公开可得的 **iOS arm64 Node 可执行文件仍不存在**（详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)），但实证发现官方 `0.2.2-rc.1` 的四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，因此用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 31 项核验（含真 boot、会话创建与恢复）的完整升级包。
+> 关于 Node 24.9：此前写「公开可得的 iOS arm64 Node 可执行文件仍不存在」，**该结论已于 2026-11-12 更正**（见下方「更正」章节）。准确说法是：**没有现成可直接用的独立 CLI 成品，但有 MIT 完整交叉编译流水线，本仓库已据此自行编译 Node 24 候选二进制**（实验包，A11 真机未验证）。稳定底座不动。实证发现官方 `0.2.2-rc.1` 的四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，因此用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 31 项核验（含真 boot、会话创建与恢复）的完整升级包。
+
+---
+
+## 更正（2026-11-12）：Node 24 的 iOS 可执行文件「不存在」是错误结论
+
+此前 README 与 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md) 断言「iOS arm64 Node ≥24.9 的可执行文件不存在」。核查后确认**这句话不准确**，更正如下：
+
+- **没有现成能直接用的独立 CLI 成品**：`j0shua-SYSON/openclaw-ios` 的 Release 只发布 `node-v22.19.0-iphoneos-arm64`；`heylogin/nodejs-mobile v24.5.0-mobile` 的 iOS zip 是 framework/静态库（供 App 嵌入），不是终端里可直接跑的 `node`，且 24.5.0 < 24.9.0。
+- **但有现成的完整编译流水线源码（MIT）**：`openclaw-ios` 的 `.github/workflows/node-drumbrake.yml` 已在 macOS-14 上把 **Node 24 + DrumBrake（V8 的 WASM 解释器）** 交叉编译成 iOS arm64 独立可执行文件。也就是说「自己编译」这条路是通的，不是做不到。
+- **本仓库已据此落地实验分支**：[`node24/`](node24/README.md) + [`.github/workflows/node24-*.yml`](.github/workflows/) 用 `davghz/node22-ios-source`（iPhone X 真机验证过的打包/签名法）与上述 MIT 补丁合成一条面向 A11 的流水线，编译 `v24.22.3` + `dsh 0.2.2-rc.2`。`.github/workflows/node24-jitless.yml` 为主推档。
+
+**必须说清的边界**：编译出二进制 ≠ 能在 A11 上跑 ≠ 能跑 DSH ≠ 插件/会话稳定。默认包的 22.12.0 有「上游在 iPhone X 真机签好 9 项 JIT entitlement + 你实机验过」两层背书，自编译的 Node 24 **一层都没有**：ldid 自签的 entitlement 是否被 iOS 16.7.15 内核放行、DrumBrake 在 A11 的行为、dsh 0.2.2-rc.2 读旧会话，全部只能在真机逐级验证。因此**默认底座 `+ios15` 一个字节都不动**，实验包用独立包名与独立路径、随时可 `dsh24-switch off` 回退，且共用 `DSH_HOME` 保证插件与对话不丢。详见 [`node24/README.md`](node24/README.md)。
+
+> 原文保留在下方与评估文档第 1~5 节作为当时的判断记录，不删除以便审计；上述更正覆盖其结论。
 
 ---
 
@@ -49,7 +63,9 @@ sh verify-deb.sh dist/dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb  # 57 
 
 共 **31 项 0 失败**；`verify-deb.sh` 对两个 deb 各 **57 项 0 失败**；两个版本各自 `verify-repro.sh` 三次构建（基准 / 扰动 mtime / 扰动 mode）SHA 完全一致。配套 `dist/fix-ios16.sh` 是 0.2.2 包的热修（单独命名，不覆盖 0.2.1 的 `fix-ios15.sh`）。
 
-> 诚实边界：沙箱里没有 A11 真机，无法验证 ldid 伪签后 APP 启动、`uicache` 注册、launchd `bootstrap`、ios-mcp 的 HID 注入。Node 24.9 的 iOS 可执行文件也不存在，本方案是「同一已验证 Node + 官方最新 DSH + 实测通过的补丁」，不是原生 Node 24。
+> 诚实边界：沙箱里没有 A11 真机，无法验证 ldid 伪签后 APP 启动、`uicache` 注册、launchd `bootstrap`、ios-mcp 的 HID 注入。本方案是「同一已验证 Node + 官方最新 DSH + 实测通过的补丁」，不是原生 Node 24。
+
+> 关于「Node 24.9 的 iOS 可执行文件不存在」：该表述已于 2026-11-12 更正，见上方「更正」章节与 [`node24/README.md`](node24/README.md) —— 无现成独立 CLI 成品，但有 MIT 编译流水线且本仓库已据此自编译实验候选二进制（A11 真机未验证）。
 
 ### 4. 手机操控：启动 DSH 就能直接调用工具链
 
@@ -143,7 +159,7 @@ sh fix-ios15.sh --restore    # 回滚启动文件（用户数据不动）
 
 `dsh-doctor` 新增 **23~26 项**：git 预检短路 / 插件市场主线程解析 / 手动转化钩子（并核验不泄漏到 AI 路径）/ 扩展垫片语法，缺任一项都会尝试就地自愈再复检。
 
-> 关于「更新 DSH 到最新版」：**默认底座仍维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`**，但本次已额外交付经过 31 项核验的 `0.2.2-rc.1+ios16` 可选升级包（见上章）。官方 `engines.node >= 24.9.0` 是 advisory；实证确认其四处 Node 22.12 兼容补丁锚点与 0.2.1 逐字一致，同一套补丁 + 同一个已验证 Node 22.12.0 下真 boot、web 监听、会话创建与恢复全通。**Node 24.9.0 的 iOS arm64 可执行文件仍不存在**（公开可得最高是经真机验证的 Node 22.x，且机型为 A9 / iOS 15.8.5，非本项目 A11 / iOS 16.7.15），所以不换 Node 二进制。升级是可选的，已知代价：已装插件的 `runtimeVersion` 豁免需复核、rc 版本可能有破坏性变更、需重传整包。完整判据、候选对照表与"未来什么条件下才升"的门槛见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。
+> 关于「更新 DSH 到最新版」：**默认底座仍维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`**，但本次已额外交付经过 31 项核验的 `0.2.2-rc.1+ios16` 可选升级包（见上章）。官方 `engines.node >= 24.9.0` 是 advisory；实证确认其四处 Node 22.12 兼容补丁锚点与 0.2.1 逐字一致，同一套补丁 + 同一个已验证 Node 22.12.0 下真 boot、web 监听、会话创建与恢复全通。**Node 24.9.0 的 iOS arm64 独立 CLI 成品此前未公开可得**（此结论已更正：存在 MIT 交叉编译流水线，本仓库已据此自编译实验候选，但 **A11 / iOS 16.7.15 真机零验证**，见上方「更正」章节），所以**默认包**不换 Node 二进制。升级是可选的，已知代价：已装插件的 `runtimeVersion` 豁免需复核、rc 版本可能有破坏性变更、需重传整包。完整判据、候选对照表与"未来什么条件下才升"的门槛见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。
 
 ---
 

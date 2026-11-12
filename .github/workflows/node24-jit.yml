@@ -1,0 +1,169 @@
+name: node24-ios-jit (APRR / standard MAP_JIT)
+
+# 性能对照产物：标准 JIT 版 Node v24.22.3 iOS arm64 独立 CLI。
+#
+# 与 jitless 版的区别：
+#   * 不打 DrumBrake 的 GYP 接线，V8 用标准 JIT。
+#   * DSH_APRR=1：目标机 iPhone X (A11) 有 APRR，MAP_JIT 原生可用
+#     （davghz 的 22.12.0 正是标准 MAP_JIT 在 iPhone X 真机测过）。
+#     OpenClaw 上游那套「关闭 MAP_JIT + mprotect W^X 多区间翻转」补丁
+#     是专给无 APRR 的 A9/A10 打的，对 A11 反而会破坏标准 JIT 路径，
+#     故 node24/scripts/ios-source-fixups.sh 用 APRR 守卫整段跳过。
+#
+# 这是实验对照包：编译成功 ≠ 能在 A11 上跑，且 JIT  entitlement /
+# 后台线程 W^X 行为在 iOS 16.7.15 上零验证。真机清单见 node24/README.md。
+# 绝不写 dist/*.deb 或 dist/SHA256SUMS.txt。
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_ref:
+        description: "Node git tag to build"
+        default: "v24.22.3"
+      apr:
+        description: "Target has APRR (A11). 1 = skip pre-APRR W^X patches (default). 0 = apply them (A9/A10 only)."
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 110
+    env:
+      NODE_REF: ${{ github.event.inputs.node_ref || 'v24.22.3' }}
+      IOS_MIN: "15.0"
+      DSH_APRR: ${{ github.event.inputs.apr || '1' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Anchor self-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          NODE_REF="$NODE_REF" sh node24/scripts/check-anchors.sh
+
+      - name: Toolchain + SDK info
+        run: |
+          set -euxo pipefail
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          clang --version
+          brew list ldid >/dev/null 2>&1 || brew install ldid
+          brew list ccache >/dev/null 2>&1 || brew install ccache
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-node24-jit-${{ env.NODE_REF }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-node24-jit-${{ env.NODE_REF }}-
+            ccache-node24-jit-
+
+      - name: Clone Node ${{ env.NODE_REF }}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "$NODE_REF" https://github.com/nodejs/node.git node-src
+          grep -E "NODE_(MAJOR|MINOR|PATCH)" node-src/src/node_version.h | head -3
+
+      - name: iOS source fixups (APRR guard = ${{ env.DSH_APRR }})
+        run: |
+          set -euxo pipefail
+          echo "DSH_APRR=$DSH_APRR (1 = A11, keep standard MAP_JIT)"
+          DSH_APRR="$DSH_APRR" bash node24/scripts/ios-source-fixups.sh node-src
+
+      - name: Configure (iphoneos-arm64, min iOS ${{ env.IOS_MIN }})
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          export IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN"
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          export CCACHE_DIR="$HOME/.ccache"
+          export CCACHE_MAXSIZE=3G
+          export CC="ccache clang -arch arm64 -isysroot $SDK -miphoneos-version-min=$IOS_MIN"
+          export CXX="ccache clang++ -std=gnu++20 -arch arm64 -isysroot $SDK -miphoneos-version-min=$IOS_MIN"
+          export CC_host="ccache clang"
+          export CXX_host="ccache clang++ -std=gnu++20"
+          export LDFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=$IOS_MIN"
+          export GYP_DEFINES="target_arch=arm64 host_arch=arm64 host_os=mac target_os=ios"
+          python3 configure \
+            --dest-os=ios \
+            --dest-cpu=arm64 \
+            --cross-compiling \
+            --with-intl=small-icu \
+            --without-npm \
+            --without-node-snapshot \
+            --without-node-code-cache \
+            --without-inspector \
+            --openssl-no-asm
+          echo "=== configure done ==="
+
+      - name: Build
+        working-directory: node-src
+        run: |
+          set -uxo pipefail
+          export CCACHE_DIR="$HOME/.ccache"
+          ccache -z >/dev/null 2>&1 || true
+          set +e
+          make -j2 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          echo "make rc=$rc"
+          set -e
+          ccache -s 2>/dev/null | head -20 || true
+          if [ "$rc" -ne 0 ]; then
+            echo "=== BUILD FAILED — error lines ==="
+            grep -nE "error:|fatal error|Error [0-9]|\*\*\* |ld: |Undefined symbols|clang: error" build.log \
+              | grep -viE "no newline|Wnewline-eof|#warning|gethostuuid|_GLIBCXX" | tail -60
+            exit 1
+          fi
+          ls -la out/Release/node
+
+      - name: Verify Mach-O + sign with 10-item entitlements
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          file out/Release/node
+          otool -hv out/Release/node | grep -i ARM64 || true
+          otool -l out/Release/node | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN_IPHONEOS" || true
+          cp "$GITHUB_WORKSPACE/node24/payload/ent.plist" ent.plist
+          ldid -Sent.plist out/Release/node
+          ldid -e out/Release/node | grep -c -E 'allow-jit|allow-unsigned-executable-memory|dynamic-codesigning' | tee jit-count.txt
+          N=$(cat jit-count.txt)
+          [ "$N" -ge 3 ] || { echo "FAIL: JIT entitlements < 3"; exit 1; }
+          otool -l out/Release/node | grep -A2 LC_CODE_SIGNATURE || true
+          echo "size: $(stat -f%z out/Release/node) bytes"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node24-ios-jit-${{ env.NODE_REF }}
+          path: |
+            node-src/out/Release/node
+            node-src/ent.plist
+            node-src/jit-count.txt
+          if-no-files-found: error
+
+      - name: Publish to Release draft + SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          OUT="node-${NODE_REF}-iphoneos-arm64-jit"
+          cp out/Release/node "$OUT"
+          shasum -a 256 "$OUT" > "$OUT.sha256"   # macOS 自带；Linux 才用 sha256sum
+          cat "$OUT.sha256"
+          gh release view node24-exp -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create node24-exp -R "$GITHUB_REPOSITORY" \
+                 --title "Node 24 iOS arm64 EXPERIMENTAL (A11 unverified)" \
+                 --notes "Self-compiled Node 24 for jailbroken iOS arm64. EXPERIMENTAL: NEVER validated on A11 / iOS 16.7.15. See node24/README.md device checklist. Does NOT replace the stable +ios15 package." \
+                 --prerelease --draft
+          gh release upload node24-exp "$OUT" "$OUT.sha256" --clobber -R "$GITHUB_REPOSITORY" || true

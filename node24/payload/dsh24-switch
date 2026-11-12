@@ -1,0 +1,111 @@
+#!/bin/sh
+# ============================================================================
+# dsh24-switch — Node 24 实验包启用/关闭/回滚（旁路，随时可退回稳定包）
+#
+# 设计要点（用户明确要求「升级插件不丢、对话不丢」）：
+#   * DSH_HOME 全程不迁移、不改名、不删除 —— dsh24 与稳定 dsh 共用同一个
+#     $DSH_HOME，插件目录、sessions/、配置都在原地。
+#   * on 时先做一份 cp -a 备份（$DSH_HOME.bak-node24），供 restore 兜底。
+#   * off 只停用实验入口（把 dsh24 改名），绝不删 DSH_HOME、绝不卸载稳定包。
+#   * 实验包的档位缓存是 .dsh-node24-tier / .dsh-node24-flags，与稳定包
+#     的 .dsh-tier 互不干扰；off 时清掉这两个实验缓存即可。
+#
+# 用法: dsh24-switch on | off | status | restore
+# ============================================================================
+set -eu
+
+JB=/var/jb
+D24="$JB/usr/lib/dsh-node24"
+HOME_D="${DSH_HOME:-$JB/var/mobile/.dsh}"
+BAK="${HOME_D}.bak-node24"
+LAUNCHER="$JB/usr/bin/dsh24"
+DISABLED="$JB/usr/bin/dsh24.disabled"
+
+usage() {
+    echo "用法: dsh24-switch on|off|status|restore" >&2
+    exit 2
+}
+
+status() {
+    echo "=== dsh24 实验包状态 ==="
+    echo "  DSH_HOME        : $HOME_D  (与稳定包共用，插件/会话在此)"
+    if [ -d "$HOME_D" ]; then echo "  插件目录        : $(ls -1 "$HOME_D/plugins" 2>/dev/null | wc -l) 项"; fi
+    if [ -d "$HOME_D/sessions" ]; then echo "  会话文件        : $(find "$HOME_D/sessions" -type f 2>/dev/null | wc -l) 个"; fi
+    if [ -x "$LAUNCHER" ]; then
+        echo "  实验入口 dsh24  : 已启用"
+    elif [ -f "$DISABLED" ]; then
+        echo "  实验入口 dsh24  : 已关闭（off）"
+    else
+        echo "  实验入口 dsh24  : 未安装"
+    fi
+    if [ -x "$D24/bin/node" ]; then
+        printf '  实验 node       : %s\n' "$("$D24/bin/node" -v 2>/dev/null || echo '无法执行')"
+    fi
+    echo "  稳定入口 dsh    : $JB/usr/bin/dsh $( [ -x "$JB/usr/bin/dsh" ] && echo '(在)' || echo '(缺失!)')"
+    if [ -d "$BAK" ]; then echo "  回滚备份        : $BAK (存在)"; fi
+}
+
+on() {
+    if [ ! -x "$D24/bin/node" ]; then
+        echo "dsh24-switch: 找不到 $D24/bin/node，实验包未安装或不完整" >&2
+        exit 1
+    fi
+    # 首次启用做一次用户数据备份（幂等：已存在则不覆盖）
+    if [ -d "$HOME_D" ] && [ ! -d "$BAK" ]; then
+        cp -a "$HOME_D" "$BAK" 2>/dev/null || \
+            echo "dsh24-switch: [WARN] DSH_HOME 备份失败，继续但不提供 restore" >&2
+        echo "  已备份 DSH_HOME -> $BAK"
+    fi
+    if [ -f "$DISABLED" ]; then
+        mv "$DISABLED" "$LAUNCHER"
+        chmod 755 "$LAUNCHER" 2>/dev/null || true
+        echo "  已重新启用 dsh24"
+    elif [ -x "$LAUNCHER" ]; then
+        echo "  dsh24 已是启用状态"
+    else
+        echo "dsh24-switch: 找不到 $LAUNCHER 或 $DISABLED，请重装实验包" >&2
+        exit 1
+    fi
+    echo "  提示：先按 node24/README.md 逐级验证；任一步失败运行 dsh24-switch off"
+    echo "        稳定包 dsh 与 DSH_HOME 中的插件/会话完全未动。"
+}
+
+off() {
+    if [ -x "$LAUNCHER" ]; then
+        mv "$LAUNCHER" "$DISABLED"
+        echo "  已关闭 dsh24（改名保留，可 on 恢复）"
+    else
+        echo "  dsh24 已处于关闭/未安装状态"
+    fi
+    # 只清实验档位缓存，绝不碰稳定包的 .dsh-tier
+    rm -f "$HOME_D/.dsh-node24-tier" "$HOME_D/.dsh-node24-flags" 2>/dev/null || true
+    echo "  已清理实验档位缓存；稳定包 .dsh-tier 保留。"
+    echo '  现在 dsh 仍是 Node 22.12.0 / dsh 0.2.1-rc.5，插件与对话原封不动。'
+}
+
+restore() {
+    if [ ! -d "$BAK" ]; then
+        echo "dsh24-switch: 没有回滚备份 $BAK，无需/无法 restore" >&2
+        exit 1
+    fi
+    echo "  将用备份覆盖当前 DSH_HOME（会丢弃启用实验包之后产生的新会话）："
+    echo "    $BAK -> $HOME_D"
+    # 不自动覆盖：先保留当前目录，避免误删
+    if [ -d "$HOME_D" ]; then
+        mv "$HOME_D" "${HOME_D}.pre-restore.$(date +%s)" 2>/dev/null || true
+    fi
+    cp -a "$BAK" "$HOME_D" 2>/dev/null || {
+        echo "dsh24-switch: 恢复失败，原目录已保留为 .pre-restore.*" >&2
+        exit 1
+    }
+    off
+    echo "  已从备份恢复 DSH_HOME，稳定包与实验包均已停用实验入口。"
+}
+
+case "${1:-}" in
+    on) on ;;
+    off) off ;;
+    status) status ;;
+    restore) restore ;;
+    *) usage ;;
+esac

@@ -26,3 +26,8 @@ __pycache__/
 gh_token
 .env.local
 .DS_Store
+
+# Node 24 实验包：deb 产物（含占位 node 的测试包绝不能提交）、构建中间树
+# 注意 node24/dist/SHA256SUMS-node24.txt 要提交（记录 bundle SHA 与 PENDING 状态）
+node24/dist/*.deb
+node24/.build/

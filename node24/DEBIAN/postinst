@@ -1,0 +1,63 @@
+#!/bin/sh
+# ---------------------------------------------------------------------------
+# dev.airdevs.dsh-node24 安装后处理（rootless，全部路径带 /var/jb）
+#
+# 与稳定包 DEBIAN/postinst 的关键区别：
+#   * 稳定包的 node 是上游在 iPhone X 真机签好的 9 项 JIT entitlement，
+#     所以 postinst 只在「确实缺失」时才补签，绝不覆盖原签名。
+#   * 本实验包的 node 是 macOS CI 上自行交叉编译的，CI 已用 10 项超集
+#     ent.plist 通过 ldid -S 签过。但 iOS 安装/传输过程可能丢签名，故这里
+#     无条件用同一份 ent.plist 重签一次（幂等），然后断言关键 JIT 项仍在。
+#   * 绝不触碰 /var/jb/usr/lib/dsh/ 下任何文件（稳定 node、dsh.env、
+#     .dsh-tier 缓存、DSH_HOME 全都不动）。
+# ---------------------------------------------------------------------------
+set -e
+JB=/var/jb
+D="$JB/usr/lib/dsh-node24"
+NODE="$D/bin/node"
+ENT="$D/ent.plist"
+
+if [ ! -L "$JB" ]; then
+    echo "dsh-node24: 未检测到 rootless 越狱环境 (/var/jb)，跳过运行时配置。" >&2
+    exit 0
+fi
+
+if [ ! -f "$NODE" ]; then
+    echo "dsh-node24: 找不到 $NODE，安装不完整" >&2
+    exit 1
+fi
+
+chmod 755 "$NODE" "$JB/usr/bin/dsh24" "$JB/usr/bin/dsh24-switch" 2>/dev/null || true
+
+# 用 10 项超集重签。绝不能用 OpenClaw 上游那份只有 4 项的 ent.plist：
+# 它缺 allow-jit / allow-unsigned-executable-memory / dynamic-codesigning /
+# run-unsigned-code / platform-application，会把 JIT 权限覆盖掉，导致
+# 「node -v 正常、一执行 JS 就 SIGBUS」；rootless 还需要 no-container。
+if command -v ldid >/dev/null 2>&1; then
+    ldid -S"$ENT" "$NODE" 2>/dev/null || ldid -S "$NODE" 2>/dev/null || true
+    JITN=$(ldid -e "$NODE" 2>/dev/null \
+           | grep -c -E 'allow-jit|allow-unsigned-executable-memory|dynamic-codesigning' || true)
+    if [ "${JITN:-0}" -ge 3 ]; then
+        echo "dsh-node24: node entitlement 校验通过（关键 JIT 项 ${JITN} 项）"
+    else
+        echo "dsh-node24: [WARN] node JIT entitlement 不足（${JITN}/3），真机可能 SIGBUS" >&2
+        echo "           请先执行 ldid -e $NODE 检查，不要继续下一步验证。" >&2
+    fi
+else
+    echo "dsh-node24: [WARN] 设备上没有 ldid，无法重签/校验 entitlement" >&2
+fi
+
+# 尽力而为：注入 trust cache（Dopamine 的 dyldhook 通常会自动注册）
+if command -v ldid >/dev/null 2>&1; then
+    ldid -S"$ENT" "$NODE" >/dev/null 2>&1 || true
+fi
+if [ -x "$JB/usr/bin/jbctl" ]; then
+    "$JB/usr/bin/jbctl" trustcache add "$NODE" >/dev/null 2>&1 || true
+fi
+
+echo "dsh-node24: 安装完成（旁路，不影响稳定包）。"
+echo "  启用:  dsh24-switch on     查看: dsh24-switch status"
+echo "  关闭:  dsh24-switch off    回滚: dsh24-switch restore"
+echo "  稳定包仍在: dsh (Node 22.12.0 / dsh 0.2.1-rc.5)，插件与对话未动。"
+echo "  务必按 node24/README.md 的真机逐级清单验证，任一步失败即关闭本包。"
+exit 0

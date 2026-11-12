@@ -1,0 +1,87 @@
+#!/bin/sh
+# ============================================================================
+# dsh24 — Node 24 实验包终端入口（旁路，rootless /var/jb）
+#
+# 与稳定包 `dsh` 的唯一关系：**共用 DSH_HOME**（用户插件、会话、配置都在
+# 那里），所以「升级不丢插件、不丢对话」在结构上成立。其余全部隔离：
+#   * node       -> /var/jb/usr/lib/dsh-node24/bin/node（v24.22.3）
+#   * node_modules -> /var/jb/usr/lib/dsh-node24/node_modules（dsh 0.2.2-rc.2）
+#   * tier       -> tier24.sh（V8 13.6 flag 白名单过滤）
+#   * 档位缓存   -> $DSH_HOME/.dsh-node24-tier（不碰稳定包的 .dsh-tier）
+#   * ent.plist  -> 实验包自己的 10 项超集
+#
+# 稳定包 `dsh` 与本脚本互不覆盖：删掉本包或 `dsh24-switch off` 即回到
+# Node 22.12.0 / dsh 0.2.1-rc.5，DSH_HOME 里的插件与会话原封不动。
+# ============================================================================
+
+JB=/var/jb
+D="$JB/usr/lib/dsh-node24"
+NODE="${DSH_NODE:-$D/bin/node}"
+BIN="$D/node_modules/@deepseek-ai/dsh/lib/bin.js"
+ENVF="$JB/etc/dsh/dsh.env"
+
+# 读稳定包的 dsh.env（只取 NODE_OPTIONS 等通用项，不覆盖本包的路径）
+[ -f "$ENVF" ] && . "$ENVF"
+
+if [ ! -L "$JB" ] || [ ! -x "$NODE" ] || [ ! -f "$BIN" ]; then
+    echo "dsh24: 越狱未激活或实验运行时缺失（需要 /var/jb 与 $D/bin/node）。" >&2
+    echo "       稳定包仍可用：直接输入 dsh。" >&2
+    exit 78
+fi
+
+# 关键：DSH_HOME 与稳定包完全相同 —— 插件、会话、配置全部沿用。
+export HOME="${HOME:-/var/mobile}"
+export DSH_HOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+export PATH="$JB/usr/bin:$JB/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export NODE_PATH="$D/node_modules"
+DSH_NODE="$NODE"; export DSH_NODE
+mkdir -p "$DSH_HOME" 2>/dev/null || true
+
+# pnpm 相关目录仍落 DSH_HOME，与稳定包一致，避免属主混乱
+PNPM_HOME="$DSH_HOME/pnpm";                  export PNPM_HOME
+XDG_DATA_HOME="$DSH_HOME/pnpm-data";         export XDG_DATA_HOME
+XDG_CACHE_HOME="$DSH_HOME/pnpm-cache";       export XDG_CACHE_HOME
+npm_config_cache="$DSH_HOME/npm-cache";      export npm_config_cache
+npm_config_store_dir="$DSH_HOME/pnpm/store"; export npm_config_store_dir
+for _d in "$PNPM_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$npm_config_cache"; do
+    mkdir -p "$_d" 2>/dev/null || true
+done
+
+# A11 / 3GB 内存门禁（与稳定包一致）
+: "${NODE_OPTIONS:=--max-old-space-size=384}"
+export NODE_OPTIONS
+
+if [ "$#" -eq 0 ]; then
+    set -- web --no-open --port "${DSH_WEB_PORT:-3081}"
+fi
+
+. "$D/tier24.sh"
+if ! tier_select; then
+    echo "dsh24: 所有 V8 启动档位都在冒烟探针里失败了。" >&2
+    echo "       node = $NODE" >&2
+    echo "       这是实验包，不代表稳定包有问题；请运行 dsh24-switch off 回退。" >&2
+    exit 74
+fi
+
+if [ "$TIER_SOURCE" = "probed" ]; then
+    printf 'dsh24: 已选定启动档位 [%s]（缓存于 .dsh-node24-tier）\n' "$TIER_NAME" >&2
+fi
+
+# Node 24 的 node:sqlite 已稳定，TIER_SQLITE_ARGS 为空；--expose-internals 仍需显式传。
+# shellcheck disable=SC2086
+"$NODE" $TIER_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" "$@"
+RC=$?
+
+case "$RC" in
+    132|133|134|135|136|138|139)
+        if [ "$TIER_NAME" != "nowasm" ]; then
+            printf 'dsh24: [%s] 档启动被信号杀死 (rc=%s)，自动降级到 nowasm 重试\n' "$TIER_NAME" "$RC" >&2
+            NOWASM_ARGS=$(tier_args_for nowasm)
+            printf '%s\n' "nowasm" > "$TIER_CACHE" 2>/dev/null || true
+            # shellcheck disable=SC2086
+            "$NODE" $NOWASM_ARGS $TIER_SQLITE_ARGS --expose-internals "$BIN" "$@"
+            RC=$?
+        fi
+        ;;
+esac
+exit "$RC"

@@ -1,8 +1,22 @@
 # 最后阶段评估：是否存在「和 Node 22.12.0 一样 100% 能用、又适用于最新版 DSH」的 Node
 
+> ## ⚠️ 更正（2026-11-12）：本文第 3 节「Node 24.9 的 iOS 可执行文件不存在」的表述不准确
+>
+> 用户质疑后重新核查，确认：
+>
+> 1. **「不存在」应改为「没有现成可直接用的独立 CLI 成品」**。`j0shua-SYSON/openclaw-ios` 的 Release 只发布 `node-v22.19.0-iphoneos-arm64`；`heylogin/nodejs-mobile v24.5.0-mobile` 的 iOS zip 是 framework/静态库（App 嵌入用），不是终端 `node`，且 24.5.0 < 24.9.0。本文第 2 节「条件是终端可直接跑的 node 二进制，不是静态库」这一判据本身正确，但把「无成品」推成「不存在/做不到」是错的。
+> 2. **存在 MIT 的完整交叉编译流水线**：`openclaw-ios` 的 `.github/workflows/node-drumbrake.yml` + `scripts/ios-source-fixups-drumbrake.sh` 已在 macOS-14 上把 **Node 24 (≥v24.18.0) + DrumBrake（V8 WASM 解释器）** 编译成 iOS arm64 独立可执行文件；`nodejs/node v24.22.3` 的 `configure.py` 仍支持 `--dest-os=ios`，DrumBrake 的 4 个 `.cc` / 7 个 header / arm64 builtin 源文件齐全，补丁锚点实测 **15 命中 0 失配**。
+> 3. **本仓库已据此自行编译**：[`node24/`](../node24/README.md) + [`.github/workflows/node24-*.yml`](../.github/workflows/) 合成 `davghz/node22-ios-source`（iPhone X 真机验证过的打包/签名法、10 项 JIT entitlement 超集）与上述 MIT 补丁，编译 `v24.22.3` + `dsh 0.2.2-rc.2` 的**实验旁路包**。
+>
+> **但原结论的核心判断仍然成立，且必须保留**：不存在「和 22.12.0 一样 **100% 能用**」的 Node 24。默认 22.12.0 有「上游 iPhone X 真机签好 entitlement + 用户实机验过」两层背书；自编译的 Node 24 **A11 / iOS 16.7.15 真机零验证** —— ldid 自签 entitlement 是否被内核放行、DrumBrake 在 A11 的行为、dsh 0.2.2-rc.2 会话兼容性，全部未知。因此**默认底座 `+ios15` 一个字节不动**，实验包独立包名/独立路径、共用 `DSH_HOME`（插件与对话不丢）、一键回退。真机逐级清单见 [`node24/README.md`](../node24/README.md)。
+>
+> 下面第 1~5 节保留当时的判断记录与证据链，不删除以便审计；上述更正覆盖其「不存在」措辞。第 6 节 `+ios16` 的实证结论不受影响。
+
+---
+
 > 触发条件（用户原话）：「如果版本升不了就后面再说，就放到最后，看看有没有新的合适的 NODE 适合的版本。和目前能用的一样。完全百分百能用的，适用于最新版本 DSH 的。」
 >
-> 本文是**主线全部完成后的最后阶段评估**。结论先行：**当前不存在「原生适配最新版 DSH、又和 22.12.0 一样 100% 能用」的 iOS arm64 Node 二进制**，因此默认底座维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`。下面给出判据、证据与"未来什么条件下才升"的门槛。
+> 本文是**主线全部完成后的最后阶段评估**。当时的结论先行：**找不到「原生适配最新版 DSH、又和 22.12.0 一样 100% 能用」的 iOS arm64 Node 二进制**，因此默认底座维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`。下面给出判据、证据与"未来什么条件下才升"的门槛。（「不存在可执行文件」的措辞已按上方更正；「做不到 100% 能用」的结论仍成立。）
 >
 > **+ios16 更新（后续实证）**：从 npm 取官方 `0.2.2-rc.1` 原始 tarball 逐文件核对后确认，其四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，`engines.node >= 24.9.0` 是 advisory 而非硬阻断。于是用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 `verify-022.sh` **31 项 0 失败**（含真 boot、web 监听、会话创建与恢复）的**可选升级包** `dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb`。这不改变「Node 24.9 的 iOS 可执行文件不存在」的事实，但满足了用户「最新版 DSH 能用」的实质目标。详见第 6 节。
 

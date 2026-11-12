@@ -1,0 +1,25 @@
+Package: dev.airdevs.dsh-node24
+Name: DSH Node 24 experimental (bypass, rollback-able)
+Version: 0.2.2-rc.2+ios24exp1
+Section: Terminal Support
+Priority: optional
+Architecture: iphoneos-arm64
+Maintainer: Air-Devs <air2@localhost>
+Depends: dev.airdevs.dsh
+Description: EXPERIMENTAL side-by-side Node 24 + dsh 0.2.2-rc.2 for A11 iOS rootless
+ THIS IS NOT A REPLACEMENT FOR THE STABLE +ios15 PACKAGE. It installs a separate
+ Node v24.22.3 binary under /var/jb/usr/lib/dsh-node24/ and a separate launcher
+ `dsh24`. It NEVER writes /var/jb/usr/lib/dsh/bin/node, never touches the default
+ dsh.env, and never unloads your plugins or sessions: dsh24 reuses the SAME
+ DSH_HOME as the stable package. Remove this package or run `dsh24-switch off`
+ to return to the stable Node 22.12.0 launcher instantly.
+ .
+ Build provenance: cross-compiled from nodejs/node v24.22.3 with the MIT-licensed
+ iOS fixups from j0shua-SYSON/openclaw-ios (DrumBrake jitless WASM interpreter),
+ signed with the same 10-item JIT entitlement superset as the stable package.
+ .
+ HONEST BOUNDARY: this binary has NEVER been run on an A11 / iOS 16.7.15 device.
+ Compiling successfully does not prove it boots, that V8 JIT/entitlements are
+ accepted by the iOS 16.7.15 kernel, that DrumBrake behaves, or that dsh
+ 0.2.2-rc.2 reads existing sessions. Follow node24/README.md "device checklist"
+ step by step and STOP at the first failure. The stable package remains untouched.

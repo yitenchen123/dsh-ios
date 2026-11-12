@@ -1,0 +1,117 @@
+#!/bin/sh
+# ============================================================================
+# dsh-doctor-node24 — Node 24 实验包专项体检（旁路，不改稳定包 doctor）
+#
+# 为什么单独写：稳定包 payload/var/jb/usr/bin/dsh-doctor 有 611 行，其中
+#   * 文件大小硬断言 101297000~101297080（那是 22.12.0 的 101,297,040）
+#   * 版本 >=22、dsh --version == 0.2.1-rc.5
+#   * 5 个 internal/* 模块路径（Node 22 内部实现）
+#   * 全套路径写死 /var/jb/usr/lib/dsh
+# 全部与 Node 24 无关，照搬只会给出「假 FAIL」。这里只检查实验包真正该
+# 关心的 10 项，且不锁文件大小（自编译产物大小未知）、不假设 internal 路径。
+#
+# 用法: dsh-doctor-node24    （退出码 0=全 OK，非 0=有 FAIL，见输出）
+# ============================================================================
+JB=/var/jb
+D="$JB/usr/lib/dsh-node24"
+NODE="${DSH_NODE:-$D/bin/node}"
+BIN="$D/node_modules/@deepseek-ai/dsh/lib/bin.js"
+HOME_D="${DSH_HOME:-$JB/var/mobile/.dsh}"
+OK=0; FAIL=0; WARN=0
+ok()   { printf '  [ ok  ] %s\n' "$1"; OK=$((OK+1)); }
+bad()  { printf '  [FAIL ] %s\n      -> %s\n' "$1" "$2" >&2; FAIL=$((FAIL+1)); }
+wrn()  { printf '  [WARN ] %s\n      -> %s\n' "$1" "$2" >&2; WARN=$((WARN+1)); }
+
+echo "=== dsh-doctor-node24  (Node 24 实验包体检) ==="
+echo "    node = $NODE"
+echo "    DSH_HOME = $HOME_D (与稳定包共用)"
+
+# 1 越狱态
+if [ -L "$JB" ]; then ok "rootless 越狱激活 (/var/jb 为符号链接)"
+else bad "/var/jb 不可用" "打开 Dopamine 点一次 Jailbreak 再重试"; fi
+
+# 2 node 可执行 + 版本 >=24（不锁 22.12 的具体大小）
+if [ -x "$NODE" ]; then
+    V=$("$NODE" -v 2>/dev/null)
+    MAJ=$(printf '%s' "$V" | sed 's/^v//' | cut -d. -f1)
+    if [ -n "$MAJ" ] && [ "$MAJ" -ge 24 ] 2>/dev/null; then
+        ok "Node 运行时 $V（>=24，满足 dsh 0.2.2-rc.2 的 engines >=24.9.0）"
+    else
+        bad "Node 版本不符：$V" "期望 v24.x；若显示 v22 说明 DSH_NODE 指到了稳定包"
+    fi
+    NS=$(wc -c < "$NODE" 2>/dev/null | tr -d '[:space:]')
+    case "$NS" in ''|*[!0-9]*) NS=0;; esac
+    if [ "$NS" -gt 10000000 ]; then ok "node 大小 $NS 字节（非空、未截断）"
+    else bad "node 大小 $NS 字节异常（过小）" "重传/重装实验包"; fi
+else
+    bad "node 不可执行：$NODE" "重装实验包或检查 ldid 签名"; fi
+
+# 3 JIT entitlement（10 项超集，至少要有 3 个关键项）
+if command -v ldid >/dev/null 2>&1; then
+    JITN=$(ldid -e "$NODE" 2>/dev/null | grep -c -E 'allow-jit|allow-unsigned-executable-memory|dynamic-codesigning' || true)
+    if [ "${JITN:-0}" -ge 3 ]; then ok "JIT entitlement 关键项 ${JITN}/3 已签"
+    else bad "JIT entitlement 不足 (${JITN}/3)" "ldid -S$D/ent.plist $NODE 补签"; fi
+else
+    wrn "设备上无 ldid，跳过 entitlement 检查" "以第 5/6 项实跑结果为准"; fi
+
+# 4 基本 JS 执行（这步才是「不 SIGBUS」的第一道真验证）
+if "$NODE" -e 'if(1+1!==2) process.exit(1)' >/dev/null 2>&1; then
+    ok "基础 JS 执行正常（-e 未 SIGBUS）"
+else
+    bad "基础 JS 执行失败（可能 SIGBUS / entitlement 未生效）" "检查 ldid -e 输出并停止后续验证"; fi
+
+# 5 WebAssembly：Node 24 + DrumBrake 下应当可用（解释器），记录但不判死
+WASM=$("$NODE" -e 'try{const m=new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]));console.log("ok")}catch(e){console.log("no")}' 2>/dev/null)
+if [ "$WASM" = "ok" ]; then ok "WebAssembly.Module 可用（DrumBrake 解释器路径）"
+else wrn "WebAssembly 不可用" "jitless 编译若移除了 WASM，需靠 nowasm 档 + fetch-shim24.cjs 兜底"; fi
+
+# 6 fetch -> 内置 undici -> HTTP 往返（A11 SIGBUS 的经典触发点）
+if [ -f "$D/smoke24.js" ]; then
+    if "$NODE" "$D/smoke24.js" >/dev/null 2>&1; then ok "fetch/undici 冒烟探针通过（native 档）"
+    else wrn "native 档冒烟失败" "这属预期可能：用 dsh24 让 tier24.sh 逐档探测，或 DSH_TIER=drumbrake"; fi
+else bad "缺 smoke24.js" "重装实验包"; fi
+
+# 7 dsh CLI 入口（版本不锁 0.2.1-rc.5，改为接受 0.2.2-rc.2）
+if [ -f "$BIN" ]; then
+    DV=$("$NODE" --expose-internals "$BIN" --version 2>/dev/null)
+    case "$DV" in
+        0.2.2-rc.2) ok "dsh CLI 入口正常 -> $DV" ;;
+        138|139|'') bad "dsh --version 无输出" "可能 SIGBUS；试 DSH_TIER=drumbrake dsh24 --version" ;;
+        *) wrn "dsh --version 得到 '$DV'（非 0.2.2-rc.2）" "确认 node_modules 版本与 rc.2 bundle 一致";;
+    esac
+else bad "缺 $BIN" "重装实验包（依赖树未随包安装）"; fi
+
+# 8 档位缓存 / flag 白名单
+if [ -f "$HOME_D/.dsh-node24-tier" ]; then
+    ok "已选定实验档位: $(cat "$HOME_D/.dsh-node24-tier" 2>/dev/null)"
+else wrn "尚未探测档位" "运行一次 dsh24 即可生成"; fi
+if [ -f "$HOME_D/.dsh-node24-flags" ]; then
+    ok "V8 flag 白名单已生成: $(wc -l < "$HOME_D/.dsh-node24-flags" 2>/dev/null) 项"
+else wrn "V8 flag 白名单未生成" "tier24.sh 首次运行会生成"; fi
+
+# 9 用户数据完整性（关键：插件/对话必须还在）
+if [ -d "$HOME_D" ]; then
+    ok "DSH_HOME 存在（与稳定包共用，未迁移）"
+    NP=$(find "$HOME_D" -maxdepth 2 -type d -name '*plugin*' 2>/dev/null | wc -l)
+    NS=$(find "$HOME_D" -type f -name '*.jsonl' 2>/dev/null | wc -l)
+    echo "         插件相关目录 $NP 个 / 会话 jsonl $NS 个（仅供核对，不判 FAIL）"
+else bad "DSH_HOME 不存在" "不要继续；先确认稳定包数据目录位置"; fi
+
+# 10 稳定包未被破坏（硬约束）
+if [ -x "$JB/usr/bin/dsh" ] && [ -x "$JB/usr/lib/dsh/bin/node" ]; then
+    STABLE=$("$JB/usr/lib/dsh/bin/node" -v 2>/dev/null)
+    case "$STABLE" in
+        v22.12.0) ok "稳定包仍在且未被改动 ($STABLE) —— 可随时 dsh24-switch off 回退" ;;
+        *) bad "稳定包 node 版本异常：$STABLE" "实验包不应修改稳定包，请检查";;
+    esac
+else bad "找不到稳定包 dsh / node" "默认包可能被破坏，请重装稳定 deb"; fi
+
+echo
+echo "=== 汇总: OK=$OK  WARN=$WARN  FAIL=$FAIL ==="
+if [ "$FAIL" -gt 0 ]; then
+    echo "有 FAIL —— 按 node24/README.md 逐级清单停止，不要继续往上验证。" >&2
+    echo "运行 dsh24-switch off 即可回到稳定包，插件与对话不受影响。" >&2
+    exit 1
+fi
+echo "无 FAIL。WARN 属实验包预期边界，需结合真机逐级清单判断。"
+exit 0

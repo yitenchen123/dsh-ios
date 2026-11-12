@@ -1,0 +1,176 @@
+name: node24-ios-jitless (DrumBrake)
+
+# 主推实验产物：把 nodejs/node v24.22.3 交叉编译成 jailbroken iOS arm64 的
+# 独立 CLI 可执行文件，启用 V8 的 DrumBrake（WASM 解释器），运行时用
+# --jitless --wasm-jitless：V8 不生成任何可执行代码，原理上绕开 A11 上
+# 后台线程写 W^X 页导致的 SIGBUS，同时 DrumBrake 让 undici/llhttp 的 WASM
+# 仍可解释执行。
+#
+# 源码补丁来源：j0shua-SYSON/openclaw-ios @ 31a6780c（MIT），见
+# node24/scripts/LICENSE-MIT.txt。本仓库改动见各脚本头部注释。
+#
+# 这是实验包：编译成功 ≠ 能在 A11 上跑。真机逐级验证见 node24/README.md。
+# 本 workflow 绝不写 dist/*.deb 或 dist/SHA256SUMS.txt（默认包字节不变）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_ref:
+        description: "Node git tag to build (needs DrumBrake, >= v24.18.0)"
+        default: "v24.22.3"
+      apr:
+        description: "0/1 reserved (jitless build does not use pre-APRR W^X patches)"
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14 # arm64 host == arm64 target；Xcode + iPhoneOS SDK + ldid
+    timeout-minutes: 110
+    env:
+      NODE_REF: ${{ github.event.inputs.node_ref || 'v24.22.3' }}
+      IOS_MIN: "15.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Python 3.12 (Node configure rejects 3.14)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Anchor self-check (patch targets must exist in NODE_REF)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          NODE_REF="$NODE_REF" sh node24/scripts/check-anchors.sh
+
+      - name: Toolchain + SDK info
+        run: |
+          set -euxo pipefail
+          xcodebuild -version
+          echo "iphoneos SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos --show-sdk-version
+          clang --version
+          sysctl -n hw.ncpu
+          brew list ldid >/dev/null 2>&1 || brew install ldid
+          brew list ccache >/dev/null 2>&1 || brew install ccache
+
+      - name: ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-node24-jitless-${{ env.NODE_REF }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-node24-jitless-${{ env.NODE_REF }}-
+            ccache-node24-jitless-
+
+      - name: Clone Node ${{ env.NODE_REF }}
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch "$NODE_REF" https://github.com/nodejs/node.git node-src
+          grep -E "NODE_(MAJOR|MINOR|PATCH)" node-src/src/node_version.h | head -3
+
+      - name: iOS source fixups + DrumBrake wiring
+        run: bash node24/scripts/ios-source-fixups-drumbrake.sh node-src
+
+      - name: Configure (iphoneos-arm64, min iOS ${{ env.IOS_MIN }})
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          export IPHONEOS_DEPLOYMENT_TARGET="$IOS_MIN"
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          export CCACHE_DIR="$HOME/.ccache"
+          export CCACHE_MAXSIZE=3G
+          export CC="ccache clang -arch arm64 -isysroot $SDK -miphoneos-version-min=$IOS_MIN"
+          export CXX="ccache clang++ -std=gnu++20 -arch arm64 -isysroot $SDK -miphoneos-version-min=$IOS_MIN"
+          export CC_host="ccache clang"
+          export CXX_host="ccache clang++ -std=gnu++20"
+          export LDFLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=$IOS_MIN"
+          export GYP_DEFINES="v8_enable_drumbrake=1 target_arch=arm64 host_arch=arm64 host_os=mac target_os=ios"
+          python3 configure \
+            --dest-os=ios \
+            --dest-cpu=arm64 \
+            --cross-compiling \
+            --with-intl=small-icu \
+            --without-npm \
+            --without-node-snapshot \
+            --without-node-code-cache \
+            --without-inspector \
+            --openssl-no-asm
+          echo "=== configure done ==="
+
+      - name: Build
+        working-directory: node-src
+        run: |
+          set -uxo pipefail
+          export CCACHE_DIR="$HOME/.ccache"
+          ccache -z >/dev/null 2>&1 || true
+          set +e
+          make -j2 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          echo "make rc=$rc"
+          set -e
+          ccache -s 2>/dev/null | head -20 || true
+          if [ "$rc" -ne 0 ]; then
+            echo "=== BUILD FAILED — error lines ==="
+            grep -nE "error:|fatal error|Error [0-9]|\*\*\* |ld: |Undefined symbols|clang: error" build.log \
+              | grep -viE "no newline|Wnewline-eof|#warning|gethostuuid|_GLIBCXX" | tail -60
+            exit 1
+          fi
+          ls -la out/Release/node
+
+      - name: Verify Mach-O + DrumBrake symbols + sign with 10-item entitlements
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          file out/Release/node
+          otool -hv out/Release/node | grep -i ARM64 || true
+          # DrumBrake 是否真的链接进来
+          if otool -tvV out/Release/node 2>/dev/null | grep -qi "WasmInterpreter"; then
+            echo "OK: DrumBrake (WasmInterpreter) symbols present"
+          else
+            echo "FAIL: no DrumBrake symbols — defines/sources not wired into V8"; exit 1
+          fi
+          for d in V8_ENABLE_DRUMBRAKE V8_DRUMBRAKE_BOUNDS_CHECKS V8_COMPRESS_POINTERS; do
+            if grep -q -- "$d" build.log; then echo "  define present: $d"; else echo "  define MISSING: $d"; fi
+          done
+          # 用本仓库 10 项超集签名，绝不用上游 4 项 ent.plist：
+          # 缺 allow-jit / dynamic-codesigning / platform-application 会让
+          # 「node -v 正常、一执行 JS 就 SIGBUS」，rootless 还需 no-container。
+          cp "$GITHUB_WORKSPACE/node24/payload/ent.plist" ent.plist
+          ldid -Sent.plist out/Release/node
+          ldid -e out/Release/node | grep -c -E 'allow-jit|allow-unsigned-executable-memory|dynamic-codesigning' | tee jit-count.txt
+          N=$(cat jit-count.txt)
+          [ "$N" -ge 3 ] || { echo "FAIL: JIT entitlements < 3"; exit 1; }
+          otool -l out/Release/node | grep -A2 LC_CODE_SIGNATURE || true
+          echo "size: $(stat -f%z out/Release/node) bytes"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node24-ios-jitless-${{ env.NODE_REF }}
+          path: |
+            node-src/out/Release/node
+            node-src/ent.plist
+            node-src/jit-count.txt
+          if-no-files-found: error
+
+      - name: Publish to Release draft + SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: node-src
+        run: |
+          set -euxo pipefail
+          OUT="node-${NODE_REF}-iphoneos-arm64-jitless"
+          cp out/Release/node "$OUT"
+          shasum -a 256 "$OUT" > "$OUT.sha256"   # macOS 自带；Linux 才用 sha256sum
+          cat "$OUT.sha256"
+          gh release view node24-exp -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create node24-exp -R "$GITHUB_REPOSITORY" \
+                 --title "Node 24 iOS arm64 EXPERIMENTAL (A11 unverified)" \
+                 --notes "Self-compiled Node 24 for jailbroken iOS arm64. EXPERIMENTAL: NEVER validated on A11 / iOS 16.7.15. See node24/README.md device checklist. Does NOT replace the stable +ios15 package." \
+                 --prerelease --draft
+          gh release upload node24-exp "$OUT" "$OUT.sha256" --clobber -R "$GITHUB_REPOSITORY" || true
