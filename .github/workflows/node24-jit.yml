@@ -36,7 +36,11 @@ jobs:
       IOS_MIN: "15.0"
       DSH_APRR: ${{ github.event.inputs.apr || '1' }}
     steps:
+      # workflow 文件必须存在于默认分支才能被 workflow_dispatch 触发，
+      # 但实验代码全部在 exp/node24 分支，故显式 checkout 该分支。
       - uses: actions/checkout@v4
+        with:
+          ref: exp/node24
 
       - name: Pin Python 3.12
         uses: actions/setup-python@v5
