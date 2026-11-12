@@ -80,7 +80,13 @@ PY
 echo "--- [4] workflow 安全边界 ---"
 for wf in .github/workflows/node24-jitless.yml .github/workflows/node24-jit.yml; do
     [ -f "$wf" ] || { bad "$wf 不存在"; continue; }
-    if grep -q 'runs-on: macos-14' "$wf"; then ok "$wf: macos-14"; else bad "$wf: 未用 macos-14"; fi
+    # 2026-11 实测 macos-14 标签已下线（job 被取消：configuration not supported）。
+    # 当前公共仓库 arm64 macOS 标签：macos-15 / macos-26 / macos-latest（3 核 M1）。
+    if grep -qE 'runs-on: (macos-15|macos-26|macos-latest)([[:space:]]|$|#)' "$wf"; then
+        ok "$wf: 使用 arm64 macOS runner"
+    else
+        bad "$wf: 未用受支持的 arm64 macOS 标签（macos-14 已下线）"
+    fi
     if grep -q -- '--dest-cpu=arm64' "$wf" && grep -q -- '--cross-compiling' "$wf"; then
         ok "$wf: iOS arm64 交叉编译参数"; else bad "$wf: 缺交叉编译参数"; fi
     if grep -q 'workflow_dispatch' "$wf"; then ok "$wf: 仅 dispatch 触发"; else bad "$wf: 缺 workflow_dispatch"; fi

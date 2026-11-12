@@ -30,7 +30,7 @@ echo "=== 生成 dsh $DSH_VER 依赖树（Node 24 实验包）==="
 
 if [ "${1:-}" = "--check" ]; then
     echo "    [自检模式] 只验证补丁锚点，不联网、不生成树"
-    [ -d "$NM" ] || { echo "缺 $NM，请先跑一次不带 --check 的生成" >&2; exit 1; }
+    [ -d "$NM" ] || { echo "缺 ${NM}，请先跑一次不带 --check 的生成" >&2; exit 1; }
 else
     rm -rf "$WORK"; mkdir -p "$WORK"
     cd "$WORK"

@@ -4,7 +4,7 @@
 #
 # 设计要点（用户明确要求「升级插件不丢、对话不丢」）：
 #   * DSH_HOME 全程不迁移、不改名、不删除 —— dsh24 与稳定 dsh 共用同一个
-#     $DSH_HOME，插件目录、sessions/、配置都在原地。
+#     ${DSH_HOME}，插件目录、sessions/、配置都在原地。
 #   * on 时先做一份 cp -a 备份（$DSH_HOME.bak-node24），供 restore 兜底。
 #   * off 只停用实验入口（把 dsh24 改名），绝不删 DSH_HOME、绝不卸载稳定包。
 #   * 实验包的档位缓存是 .dsh-node24-tier / .dsh-node24-flags，与稳定包
@@ -63,7 +63,7 @@ on() {
     elif [ -x "$LAUNCHER" ]; then
         echo "  dsh24 已是启用状态"
     else
-        echo "dsh24-switch: 找不到 $LAUNCHER 或 $DISABLED，请重装实验包" >&2
+        echo "dsh24-switch: 找不到 $LAUNCHER 或 ${DISABLED}，请重装实验包" >&2
         exit 1
     fi
     echo "  提示：先按 node24/README.md 逐级验证；任一步失败运行 dsh24-switch off"
@@ -85,7 +85,7 @@ off() {
 
 restore() {
     if [ ! -d "$BAK" ]; then
-        echo "dsh24-switch: 没有回滚备份 $BAK，无需/无法 restore" >&2
+        echo "dsh24-switch: 没有回滚备份 ${BAK}，无需/无法 restore" >&2
         exit 1
     fi
     echo "  将用备份覆盖当前 DSH_HOME（会丢弃启用实验包之后产生的新会话）："

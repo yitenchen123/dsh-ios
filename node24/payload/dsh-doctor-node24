@@ -35,7 +35,7 @@ if [ -x "$NODE" ]; then
     V=$("$NODE" -v 2>/dev/null)
     MAJ=$(printf '%s' "$V" | sed 's/^v//' | cut -d. -f1)
     if [ -n "$MAJ" ] && [ "$MAJ" -ge 24 ] 2>/dev/null; then
-        ok "Node 运行时 $V（>=24，满足 dsh 0.2.2-rc.2 的 engines >=24.9.0）"
+        ok "Node 运行时 ${V}（>=24，满足 dsh 0.2.2-rc.2 的 engines >=24.9.0）"
     else
         bad "Node 版本不符：$V" "期望 v24.x；若显示 v22 说明 DSH_NODE 指到了稳定包"
     fi

@@ -23,7 +23,7 @@ if [ ! -L "$JB" ]; then
 fi
 
 if [ ! -f "$NODE" ]; then
-    echo "dsh-node24: 找不到 $NODE，安装不完整" >&2
+    echo "dsh-node24: 找不到 ${NODE}，安装不完整" >&2
     exit 1
 fi
 

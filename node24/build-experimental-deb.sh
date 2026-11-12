@@ -59,7 +59,7 @@ fi
 [ -f "$NM_TREE/@deepseek-ai/dsh/package.json" ] || { echo "依赖树缺 dsh 主包" >&2; exit 1; }
 # 版本核对
 GOT=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$NM_TREE/@deepseek-ai/dsh/package.json" | head -1)
-[ "$GOT" = "$DSH_VER" ] || { echo "依赖树 dsh 版本是 $GOT，期望 $DSH_VER" >&2; exit 1; }
+[ "$GOT" = "$DSH_VER" ] || { echo "依赖树 dsh 版本是 ${GOT}，期望 $DSH_VER" >&2; exit 1; }
 echo "    dsh 版本 OK ($GOT)"
 # 依赖树不得含原生 addon
 NADDON=$(find "$NM_TREE" -name '*.node' | wc -l)

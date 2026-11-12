@@ -27,7 +27,7 @@ mkdir -p "$CACHE" 2>/dev/null || true
 
 echo "=== Node 24 iOS 补丁锚点自检 ==="
 echo "    NODE_REF = $NODE_REF"
-echo "    FALLBACK = $FALLBACK_REF（仅人工确认后使用）"
+echo "    FALLBACK = ${FALLBACK_REF}（仅人工确认后使用）"
 echo "    RAW      = $RAW"
 echo
 
