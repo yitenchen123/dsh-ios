@@ -38,6 +38,7 @@ for f in \
     node24/payload/dsh24-switch \
     node24/payload/dsh-doctor-node24 \
     node24/README.md \
+    node24/tests/verify-no-data-loss.sh \
     .github/workflows/node24-jitless.yml \
     .github/workflows/node24-jit.yml ; do
     if [ -s "$f" ]; then ok "$f"; else bad "缺失或为空: $f"; fi
@@ -49,7 +50,8 @@ for f in node24/DEBIAN/postinst node24/payload/dsh24 node24/payload/dsh24-switch
          node24/payload/tier24.sh node24/payload/dsh-doctor-node24 \
          node24/scripts/check-anchors.sh node24/scripts/ios-source-fixups.sh \
          node24/scripts/ios-source-fixups-drumbrake.sh \
-         node24/build-experimental-deb.sh node24/make-rc2-tree.sh; do
+         node24/build-experimental-deb.sh node24/make-rc2-tree.sh \
+         node24/tests/verify-no-data-loss.sh; do
     if sh -n "$f" 2>/dev/null; then ok "sh -n $f"; else bad "sh -n 失败: $f"; fi
 done
 if command -v node >/dev/null 2>&1; then
@@ -186,6 +188,7 @@ CA_BAD=$(python3.11 -c '
 import re, glob
 files = (glob.glob("node24/payload/*") + glob.glob("node24/DEBIAN/*")
          + glob.glob("node24/scripts/*.sh") + glob.glob("node24/*.sh")
+         + glob.glob("node24/tests/*.sh")
          + glob.glob(".github/workflows/node24-*.yml"))
 hits = []
 for p in files:
