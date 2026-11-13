@@ -31,7 +31,7 @@
 | dsh 0.2.2-rc.2 读旧会话、插件兼容 | —（rc.1 已 31 项核验） | **零验证** |
 | 你自己实机验证 | ✔ | **待你按下面清单做** |
 
-沙箱是 Linux x86_64，没有 Xcode / iPhoneOS SDK / A11 真机，**编译只能在 GitHub Actions `macos-14` 上做，运行验证只能在你的设备上做**。本地只能验补丁锚点、脚本语法、默认包 SHA 不变。
+沙箱是 Linux x86_64，没有 Xcode / iPhoneOS SDK / A11 真机，**编译只能在 GitHub Actions 的 arm64 macOS runner（`macos-15`；`macos-14` 标签 2026-11 已下线）上做，运行验证只能在你的设备上做**。本地只能验补丁锚点、脚本语法、默认包 SHA 不变；`check-anchors.sh` 的 `SRC_DIR` 模式还能直接对一份真实 clone 的 node 源码树做锚点自检。
 
 ## 目录结构
 
@@ -41,7 +41,7 @@
 node24/
   scripts/LICENSE-MIT.txt              # OpenClaw MIT 全文
   scripts/ios-source-fixups*.sh        # 逐字移植的 iOS 源码补丁（含 A11/APRR 守卫）
-  scripts/check-anchors.sh             # 本地可跑：v24.22.3 补丁锚点命中自检
+  scripts/check-anchors.sh             # 锚点自检：CI 走 SRC_DIR 读本地 clone；本地可离线/联网跑
   DEBIAN/{control,postinst}           # 独立包名 + 10 项 entitlement 补签
   payload/
     ent.plist                         # 10 项超集（不是 OpenClaw 的 4 项）
@@ -64,11 +64,11 @@ node24/
 - 包名 `dev.airdevs.dsh-node24` 独立，`verify-deb.sh` 的 `case *0.2.2-rc.1*` 不会误判
 - 默认三个 deb 的 SHA 与 `dist/SHA256SUMS.txt` 14 项**字节不变**（`verify-node24.sh` 第 6 项会断言）
 
-## 当前状态（2026-11-12）
+## 当前状态（2026-11-13）
 
 | 产物 | 状态 |
 |---|---|
-| 编译流水线（两条 workflow + MIT 补丁 + 锚点自检） | ✅ 已落地，`check-anchors.sh` 对 v24.22.3 **15 命中 0 失配** |
+| 编译流水线（两条 workflow + MIT 补丁 + 锚点自检） | ✅ 已落地，`check-anchors.sh` 对 v24.22.3 **15 命中 0 失配**；2026-11-13 修好 macOS 兼容（clone 提前 + `SRC_DIR` 本地源码树自检），本地静态自检 **55 项 0 失败** |
 | dsh `0.2.2-rc.2` 纯 JS 依赖树（661 包 / 0 `.node` / 2000 文件语法 0 错） | ✅ `node24/make-rc2-tree.sh` 已生成，bundle SHA 见 `dist/SHA256SUMS-node24.txt` |
 | 旁路实验 deb 的全部文件（control / postinst / payload / 组装脚本） | ✅ 已落地，`build-experimental-deb.sh` 端到端跑通 |
 | **可安装的实验 deb** | ⏳ **PENDING**：等 CI 编出真实 iOS arm64 node 二进制后用 `build-experimental-deb.sh` 组装。组装脚本有 ≥20MB 最小尺寸防护，不会把占位文件打成包 |
@@ -78,14 +78,26 @@ node24/
 
 ## 编译（GitHub Actions）
 
-1. 推到 `exp/node24` 分支后，手动触发（仅 `workflow_dispatch`，推送不会自动编译）：
+> **2026-11-13 修复**：旧版把锚点自检放在 `Clone Node` 之前，靠 `gh api` 联网
+> 拉 13 个源码文件，并用了 GNU `timeout` / `base64 -d`。macOS runner 没有
+> GNU `timeout`、BSD `base64` 解码要 `-D`，两条 CI 因此静默失败成「3 次重试后
+> 仍取不到」。现在 **先 clone、再自检**：自检通过 `SRC_DIR` 直接读刚 clone
+> 下来的本地源码树，零联网、零平台差异，且校验的正是随后 fixups 要打补丁的
+> 同一份源码。脚本联网兜底路径也已去掉全部 GNU 专有命令。
+
+1. workflow 定义登记在默认分支 `main`（`workflow_dispatch` 只能触发默认分支上
+   的 workflow 定义），但 workflow 内 `actions/checkout@v4` 显式 `ref: exp/node24`
+   取实验代码。因此触发时 **必须 `--ref main`**，写 `--ref exp/node24` 会报
+   `workflow not found on the default branch`：
    ```sh
-   gh workflow run node24-jitless.yml --repo yitenchen123/dsh-ios --ref exp/node24 \
+   gh workflow run node24-jitless.yml --repo yitenchen123/dsh-ios --ref main \
      -f node_ref=v24.22.3
-   gh workflow run node24-jit.yml      --repo yitenchen123/dsh-ios --ref exp/node24 \
+   gh workflow run node24-jit.yml      --repo yitenchen123/dsh-ios --ref main \
      -f node_ref=v24.22.3
    ```
-2. CI 里 `check-anchors.sh` 先跑（本地已实测 **15 命中 0 失配**）；编译约 60–110 分钟，`make -j2` 避免 macOS runner OOM。
+2. CI 顺序：`Clone Node v24.22.3` → `Anchor self-check`（`SRC_DIR` 本地源码树，
+   本地已实测 **15 命中 0 失配**）→ 工具链 → fixups → configure → `make -j2`
+   （约 60–110 分钟，避免 macOS runner OOM）。
 3. 成功产出 `node-v24.22.3-iphoneos-arm64*`（+ `ent.plist`），上传 Actions artifact 与 Release 草稿。
 4. **组装可安装 deb**（拿到真二进制后，在构建机上做）：
    ```sh

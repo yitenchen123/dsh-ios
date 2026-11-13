@@ -100,6 +100,21 @@ for wf in .github/workflows/node24-jitless.yml .github/workflows/node24-jit.yml;
     # 必须用 10 项 ent.plist 签名，不能用 4 项
     if grep -q 'node24/payload/ent.plist\|ent.plist' "$wf"; then
         ok "$wf: 引用 ent.plist 签名"; else bad "$wf: 未引用 ent.plist"; fi
+    # 2026-11-13 修：锚点自检必须基于本地 clone 的源码树（SRC_DIR），
+    # 且 Clone Node 步骤必须排在自检之前。否则会退回「gh api + GNU timeout
+    # + base64 -d」的联网路径，在 macOS runner 上静默失败。
+    if grep -q 'SRC_DIR=.*sh node24/scripts/check-anchors.sh' "$wf"; then
+        ok "$wf: 锚点自检走本地源码树（SRC_DIR，零联网）"
+    else
+        bad "$wf: 锚点自检未走 SRC_DIR 本地源码树"
+    fi
+    CLONE_L=$(grep -n 'name: Clone Node' "$wf" | head -1 | cut -d: -f1)
+    ANCHOR_L=$(grep -n 'name: Anchor self-check' "$wf" | head -1 | cut -d: -f1)
+    if [ -n "$CLONE_L" ] && [ -n "$ANCHOR_L" ] && [ "$CLONE_L" -lt "$ANCHOR_L" ]; then
+        ok "$wf: Clone Node 排在 Anchor self-check 之前"
+    else
+        bad "$wf: Clone Node 必须排在 Anchor self-check 之前"
+    fi
 done
 
 # --- 5. YAML 可解析 ---
@@ -150,6 +165,42 @@ else
 fi
 if grep -q 'dev.airdevs.dsh-node24' node24/DEBIAN/control; then
     ok "实验包使用独立 Package 名"; else bad "实验包名不是独立命名空间"; fi
+
+# --- 8. check-anchors.sh 跨平台（禁止 GNU 专有命令）---
+echo "--- [8] 锚点自检脚本跨平台 ---"
+CA=node24/scripts/check-anchors.sh
+# 只看非注释的实际命令；注释里出现这些词是说明文字，不算违规。
+CA_GNU=$(grep -vE '^[[:space:]]*#|^[[:space:]]*$' "$CA" \
+         | grep -nE 'timeout [0-9]|base64 -d|stat -c%s' || true)
+if [ -n "$CA_GNU" ]; then
+    bad "$CA: 含 GNU 专有命令（macOS 不兼容）: $CA_GNU"
+else
+    ok "$CA: 无 GNU timeout / base64 -d / stat -c%s（macOS/Linux 通用）"
+fi
+if grep -q 'SRC_DIR="${SRC_DIR:-}"' "$CA"; then
+    ok "$CA: 支持 SRC_DIR 本地源码树模式"; else bad "$CA: 缺 SRC_DIR 模式"; fi
+# macOS /bin/bash -e 会把「未加大括号的变量紧接全角括号」里的非 ASCII 字符
+# 当成变量名一部分，触发 unbound variable（Linux dash 容忍）。此坑已踩过两次，
+# 做成永久断言，覆盖所有设备端脚本 + 两条 workflow 的内嵌 shell 命令。
+CA_BAD=$(python3.11 -c '
+import re, glob
+files = (glob.glob("node24/payload/*") + glob.glob("node24/DEBIAN/*")
+         + glob.glob("node24/scripts/*.sh") + glob.glob("node24/*.sh")
+         + glob.glob(".github/workflows/node24-*.yml"))
+hits = []
+for p in files:
+    try: lines = open(p, encoding="utf-8").read().splitlines()
+    except Exception: continue
+    for i, l in enumerate(lines, 1):
+        if re.search(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]", l):
+            hits.append("%s:%d" % (p, i))
+print(",".join(hits))
+' 2>/dev/null || true)
+if [ -n "$CA_BAD" ]; then
+    bad "存在 \$VAR 后紧跟全角字符（macOS bash unbound variable）: $CA_BAD"
+else
+    ok "无 \$VAR 后紧跟全角字符（macOS bash 兼容）"
+fi
 
 echo
 echo "=== 汇总: OK=$OK  FAIL=$FAIL ==="
