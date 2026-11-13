@@ -28,7 +28,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15 # arm64 (M1) host == arm64 target；macos-14 标签已下线
-    timeout-minutes: 110
+    timeout-minutes: 300 # 与 jit 版一致；DrumBrake 路线已判定与 V8 13.6 不兼容，仅留作审计
     env:
       NODE_REF: ${{ github.event.inputs.node_ref || 'v24.22.3' }}
       IOS_MIN: "15.0"
