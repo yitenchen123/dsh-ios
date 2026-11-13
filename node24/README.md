@@ -15,8 +15,20 @@
 此前文档写「iOS arm64 Node ≥24.9 可执行文件不存在」——**这句话是错的**，现更正：
 
 - **没有现成可直接用的独立 CLI 成品**：OpenClaw-iOS 的 Release 只发布 `node-v22.19.0-iphoneos-arm64`；`heylogin/nodejs-mobile v24.5.0-mobile` 的 iOS zip 是 framework/静态库（供 App 嵌入），不是独立 `node` 命令，且 24.5.0 < 24.9.0。
-- **但有现成的完整编译流水线源码（MIT）**：[`j0shua-SYSON/openclaw-ios`](https://github.com/j0shua-SYSON/openclaw-ios) 的 `.github/workflows/node-drumbrake.yml` + `scripts/ios-source-fixups-drumbrake.sh`，已在 macOS-14 上把 **Node 24 + DrumBrake（V8 的 WASM 解释器）** 交叉编译成 iOS arm64 独立可执行文件。
-- 本仓库把这套补丁与 `davghz/node22-ios-source`（**iPhone X 真机验证过**的打包/签名法、10 项 JIT entitlement 超集）合成一条面向 A11 / iOS 16.7.15 的流水线，见 `.github/workflows/node24-*.yml`。
+- **但有现成的完整编译流水线源码（MIT）**：[`j0shua-SYSON/openclaw-ios`](https://github.com/j0shua-SYSON/openclaw-ios) 的 `.github/workflows/node-drumbrake.yml` + `scripts/ios-source-fixups-drumbrake.sh`，以及标准 JIT 版的 `node-ios.yml` + `ios-source-fixups.sh`。本仓库据此自建两条面向 A11 / iOS 16.7.15 的 workflow（见 `.github/workflows/node24-*.yml`），并把这套补丁与 `davghz/node22-ios-source`（**iPhone X 真机验证过**的打包/签名法、10 项 JIT entitlement 超集）合成。
+- **⚠️ 更正（2026-11-13 CI 实测）**：上一版这里写「上游已把 Node 24 + DrumBrake 交叉编译成 iOS 可执行文件」——**这句话没有成功依据**。核查上游 `node-drumbrake.yml` 的历史 run（2026-07、2026-09 共 2 次）**全部 failure，从未成功**；上游 `patches/node-ios/README.md` 原文是「Empty until attempt #1 reveals what breaks」。本仓库 2026-11-13 首次真跑也证实：DrumBrake / jitless 版在 `v24.22.3`（V8 13.6）编译失败，根因见下方「首次 CI 实测结果」。有源码流水线 ≠ 该流水线能编译成功 ≠ 有可用二进制。
+- 相对地，上游的**标准 JIT** 路线 `node-ios.yml` 有多次 `success` 记录（默认 `v22.19.0`，非 Node 24），这是两条 workflow 里更可能产出可用二进制的一条。
+
+### 首次 CI 实测结果（2026-11-13，重要）
+
+| run | 路线 | 结果 |
+|---|---|---|
+| `43404715618` | jitless + DrumBrake | ❌ **失败**（Build 53m6s 后 V8 源码级编译错误） |
+| `43404721219` | 标准 JIT（APRR 守卫） | 🔄 编译中 / 以 GitHub 终态为准 |
+
+**jitless 失败根因（不是脚本/网络/超时/移植差异）**：补丁脚本、`GYP_DEFINES`、`configure` 参数与上游逐字一致；`check-anchors.sh` 的 15 命中只校验「GYP 补丁锚点能否打上」，校验不了 V8 C++ API 兼容性。真编译时 `deps/v8/src/wasm/interpreter/wasm-interpreter.cc` / `wasm-interpreter-runtime.cc` 里几十处 `ValueType::Ref(ModuleTypeIndex)` / `RefMaybeNull(ModuleTypeIndex, ...)` 单/双参数调用，与 `v24.22.3`（V8 13.6）`value-type.h` 的实际签名（`Ref(ModuleTypeIndex, bool shared, RefTypeKind)` 等 3/4 参数）不匹配，报 `no matching function` / `no viable conversion ModuleTypeIndex→ValueTypeBase`，最终 `fatal error: too many errors emitted`。`v24.18.0` 的 `value-type.h` 签名与 `v24.22.3` 完全相同，**因此简单降级到 v24.18.0 不能解决此问题**。完整失败日志分类统计见 CI artifact / 本分支提交记录。
+
+**这说明**：DrumBrake wiring 是上游针对 A9 / 无 APRR 设备的实验性补丁，本身从未验证成功；A11 有 APRR，标准 JIT 路线才是更贴合目标机的选择。jitless 产物**不存在**，绝不伪造。
 
 ### 诚实的边界（务必读完）
 
@@ -36,8 +48,8 @@
 ## 目录结构
 
 ```
-.github/workflows/node24-jitless.yml   # 主推：Node24 + DrumBrake，--jitless --wasm-jitless
-.github/workflows/node24-jit.yml       # 对照：标准 JIT（A11 有 APRR，跳过 A9/A10 的 mprotect W^X 补丁）
+.github/workflows/node24-jitless.yml   # 实验：Node24 + DrumBrake；2026-11-13 首跑编译失败（V8 13.6 API 不兼容），产物不存在
+.github/workflows/node24-jit.yml       # 现行主路线：标准 JIT（A11 有 APRR，跳过 A9/A10 的 mprotect W^X 补丁）
 node24/
   scripts/LICENSE-MIT.txt              # OpenClaw MIT 全文
   scripts/ios-source-fixups*.sh        # 逐字移植的 iOS 源码补丁（含 A11/APRR 守卫）
@@ -89,10 +101,11 @@ sh node24/tests/verify-no-data-loss.sh
 
 | 产物 | 状态 |
 |---|---|
-| 编译流水线（两条 workflow + MIT 补丁 + 锚点自检） | ✅ 已落地，`check-anchors.sh` 对 v24.22.3 **15 命中 0 失配**；2026-11-13 修好 macOS 兼容（clone 提前 + `SRC_DIR` 本地源码树自检），本地静态自检 **55 项 0 失败** |
+| 编译流水线（两条 workflow + MIT 补丁 + 锚点自检） | ✅ 已落地，`check-anchors.sh` 对 v24.22.3 **15 命中 0 失配**；2026-11-13 修好 macOS 兼容（clone 提前 + `SRC_DIR` 本地源码树自检），本地静态自检 **58 项 0 失败** |
+| **首次真跑 CI（2026-11-13）** | ❌ jitless+DrumBrake `43404715618` **编译失败**（V8 源码级 API 不兼容，见上「首次 CI 实测结果」）；🔄 标准 JIT `43404721219` 编译中 |
 | dsh `0.2.2-rc.2` 纯 JS 依赖树（661 包 / 0 `.node` / 2000 文件语法 0 错） | ✅ `node24/make-rc2-tree.sh` 已生成，bundle SHA 见 `dist/SHA256SUMS-node24.txt` |
 | 旁路实验 deb 的全部文件（control / postinst / payload / 组装脚本） | ✅ 已落地，`build-experimental-deb.sh` 端到端跑通 |
-| **可安装的实验 deb** | ⏳ **PENDING**：等 CI 编出真实 iOS arm64 node 二进制后用 `build-experimental-deb.sh` 组装。组装脚本有 ≥20MB 最小尺寸防护，不会把占位文件打成包 |
+| **可安装的实验 deb** | ⏳ **PENDING**：jitless 产物不存在；等标准 JIT 版（或后续修复版）编出真实 iOS arm64 node 二进制后用 `build-experimental-deb.sh` 组装。组装脚本有 ≥20MB 最小尺寸防护，不会把占位文件打成包 |
 | **A11 / iOS 16.7.15 真机运行** | ❌ **零验证**，需你按下方清单逐级做 |
 
 > 默认 `+ios15` / `+ios16` / APP 三个 deb 的 SHA 与 `dist/SHA256SUMS.txt` 14 项**字节未变**；`DEBIAN/`、`ent.plist`、`payload/`、`shims/`、`build.sh`、`bootstrap.sh` 相对 HEAD 零改动（`node24/verify-node24.sh` 第 6 项会断言）。
@@ -122,17 +135,19 @@ sh node24/tests/verify-no-data-loss.sh
 3. 成功产出 `node-v24.22.3-iphoneos-arm64*`（+ `ent.plist`），上传 Actions artifact 与 Release 草稿。
 4. **组装可安装 deb**（拿到真二进制后，在构建机上做）：
    ```sh
-   gh run download <jitless-run-id> -n node24-ios-jitless-v24.22.3 -D node24/dist
+   gh run download <成功的-run-id> -n <artifact-名> -D node24/dist
    sh node24/build-experimental-deb.sh
-   # 脚本会在 node24/dist 下自动发现 >20MB 的 arm64 Mach-O：artifact 内可能叫
-   # node 或 out/Release/node，Release draft 里叫 node-v24.22.3-...-jitless，
-   # 文件名不统一也不影响。也可显式指定：
+   # ⚠️ 必须用「编译成功」那条 run 的 artifact（现行为标准 JIT 版 43404721219，
+   #   jitless 43404715618 已编译失败、无产物）。脚本会在 node24/dist 下自动
+   #   发现 >20MB 的 arm64 Mach-O：artifact 内可能叫 node 或 out/Release/node，
+   #   Release draft 里另有一个名字，文件名不统一也不影响。也可显式指定：
    #   NODE24_BIN=/path/to/node sh node24/build-experimental-deb.sh
    # 产出 node24/dist/dev.airdevs.dsh-node24_0.2.2-rc.2+ios24exp1_iphoneos-arm64.deb
    # 并把 SHA 写入 node24/dist/SHA256SUMS-node24.txt
    ```
    组装脚本会校验 Mach-O 头、≥20MB 尺寸、dsh 版本、0 个 `.node`、包内路径隔离，并复用 `build.sh` 的 mode 归一化 / `SOURCE_DATE_EPOCH` / `dpkg-deb -Zgzip -z9`。
-5. **编译失败**：只交付流水线 + 锚点报告 + 失败日志，明确「未产出二进制、A11 零验证」，**绝不伪造产物**。锚点若因版本升级漂移，才在人工确认后回退 `NODE_REF=v24.18.0`。
+5. **编译失败**：只交付流水线 + 锚点报告 + 失败日志，明确「未产出二进制、A11 零验证」，**绝不伪造产物**。
+   > **注意（2026-11-13 实测）**：jitless 版的失败不是锚点漂移，而是 DrumBrake 解释器源码与 V8 13.6 `value-type.h` 的 C++ API 不兼容；`v24.18.0` 的 `value-type.h` 签名与 `v24.22.3` 完全相同，**因此回退 `NODE_REF=v24.18.0` 不能修复此失败**——不要再按旧说明做无谓降级。修复需真正改写 DrumBrake 解释器调用以适配 V8 13.6 签名，或改走标准 JIT 路线。
 
 ## 真机逐级验证清单（你的 iPhone X / A11 / iOS 16.7.15）
 
