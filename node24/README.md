@@ -122,9 +122,12 @@ sh node24/tests/verify-no-data-loss.sh
 3. 成功产出 `node-v24.22.3-iphoneos-arm64*`（+ `ent.plist`），上传 Actions artifact 与 Release 草稿。
 4. **组装可安装 deb**（拿到真二进制后，在构建机上做）：
    ```sh
-   gh run download <run-id> -n node24-ios-jitless-v24.22.3 -D node24/dist
-   NODE24_BIN=node24/dist/node-v24.22.3-iphoneos-arm64-jitless \
-     sh node24/build-experimental-deb.sh
+   gh run download <jitless-run-id> -n node24-ios-jitless-v24.22.3 -D node24/dist
+   sh node24/build-experimental-deb.sh
+   # 脚本会在 node24/dist 下自动发现 >20MB 的 arm64 Mach-O：artifact 内可能叫
+   # node 或 out/Release/node，Release draft 里叫 node-v24.22.3-...-jitless，
+   # 文件名不统一也不影响。也可显式指定：
+   #   NODE24_BIN=/path/to/node sh node24/build-experimental-deb.sh
    # 产出 node24/dist/dev.airdevs.dsh-node24_0.2.2-rc.2+ios24exp1_iphoneos-arm64.deb
    # 并把 SHA 写入 node24/dist/SHA256SUMS-node24.txt
    ```

@@ -33,8 +33,30 @@ SDE="${SOURCE_DATE_EPOCH:-1700000000}"
 
 echo "=== 组装 Node 24 实验 deb（旁路）==="
 echo "    包: dev.airdevs.dsh-node24  $VER"
-echo "    node: $NODE24_BIN"
 echo "    依赖树: $NM_TREE"
+
+# --- 0a. 自动发现 CI 产物 ---
+# gh run download 解出的 artifact 文件名取决于 upload-artifact 的公共根计算
+# （可能是 node，也可能是 out/Release/node）；Release draft 里则叫
+# node-v24.22.3-iphoneos-arm64-jitless。与其依赖文件名约定，不如在
+# node24/dist 下找「>20MB 且 arm64 Mach-O」的那个文件，避免组装卡住。
+if [ ! -s "$NODE24_BIN" ]; then
+    echo "    默认路径无 node，尝试在 $N/dist 下自动发现 CI 产物 ..."
+    CAND=""
+    # 本仓库路径不含空格，for $(find) 安全；magic 与大小双重校验防误选
+    for p in $(find "$N/dist" -type f \( -name node -o -name 'node-v*' \) -size +20M 2>/dev/null); do
+        M=$(od -An -tx1 -N4 "$p" 2>/dev/null | tr -d ' \n')
+        if [ "$M" = "cffaedfe" ]; then CAND="$p"; break; fi
+    done
+    [ -n "$CAND" ] || {
+        echo "在 $N/dist 下未找到 arm64 Mach-O node 产物。" >&2
+        echo "  先下载 CI artifact，或显式指定 NODE24_BIN=/path/to/node" >&2
+        exit 1
+    }
+    NODE24_BIN="$CAND"
+    echo "    自动发现: $NODE24_BIN"
+fi
+echo "    node: $NODE24_BIN"
 
 # --- 0. 前置校验 ---
 [ -s "$NODE24_BIN" ] || { echo "缺 node24 二进制: $NODE24_BIN" >&2; echo "  先跑 GitHub Actions 编译并下载产物。" >&2; exit 1; }
