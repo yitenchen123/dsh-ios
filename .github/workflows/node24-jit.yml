@@ -47,12 +47,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Anchor self-check
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # 先 clone：锚点自检直接读这份本地源码树（零联网、零平台依赖），
+      # 且校验的正是随后 fixups 要打补丁的同一份源码。2026-11-13 修：
+      # 旧版把自检放在 clone 之前，靠 gh api + GNU timeout + base64 -d
+      # 联网拉 13 个文件，macOS runner 无 GNU timeout、BSD base64 要 -D，
+      # 静默失败成「3 次重试后仍取不到」。
+      - name: Clone Node ${{ env.NODE_REF }}
         run: |
           set -euxo pipefail
-          NODE_REF="$NODE_REF" sh node24/scripts/check-anchors.sh
+          git clone --depth 1 --branch "$NODE_REF" https://github.com/nodejs/node.git node-src
+          grep -E "NODE_(MAJOR|MINOR|PATCH)" node-src/src/node_version.h | head -3
+
+      - name: Anchor self-check
+        run: |
+          set -euxo pipefail
+          SRC_DIR="$GITHUB_WORKSPACE/node-src" NODE_REF="$NODE_REF" sh node24/scripts/check-anchors.sh
 
       - name: Toolchain + SDK info
         run: |
@@ -71,12 +80,6 @@ jobs:
           restore-keys: |
             ccache-node24-jit-${{ env.NODE_REF }}-
             ccache-node24-jit-
-
-      - name: Clone Node ${{ env.NODE_REF }}
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 --branch "$NODE_REF" https://github.com/nodejs/node.git node-src
-          grep -E "NODE_(MAJOR|MINOR|PATCH)" node-src/src/node_version.h | head -3
 
       - name: iOS source fixups (APRR guard = ${{ env.DSH_APRR }})
         run: |
