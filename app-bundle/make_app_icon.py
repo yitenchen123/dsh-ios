@@ -1,28 +1,204 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""生成 DSH.app 图标（纯几何绘制，不依赖任何字体文件 → 输出字节级确定）。
+"""Generate the DSH.app icon set from the OFFICIAL DeepSeek Harness icon.
 
-用户明确说过"太丑了太丑了"，所以这里走极简路线：
-深墨蓝圆角方底 + 一个白色终端提示符 ">_"（两笔多边形）+ 左下角一个
-小小的强调色圆点。没有渐变、没有阴影、没有文字渲染。
+Source: https://github.com/deepseek-ai/deepseek-harness
+        apps/desktop/resources/icon.png (1104x1104 RGBA, official desktop APP icon)
+
+Why the official icon: dsh-Go (https://github.com/ccch1mneyyy/dsh-Go) ships its
+OWN brand mark ("鱼尾与气泡", see its ASSETS.md), and its ASSETS.md explicitly
+says the whale-tail artwork borrowed from DeepSeek is the official DeepSeek
+icon and remains DeepSeek's trademark. This package IS DeepSeek Harness, so
+using the official icon is both correct and expected.
+
+`app-bundle/assets/AppIcon-1024.png` is the official artwork cropped to the
+1024x1024 tile (the source has a 40/32px margin plus a drop shadow).  The
+generator only decodes/resizes/encodes PNG with the stdlib, so output is
+byte-identical on every host and no Pillow / ImageMagick is required.
+
+Usage:
+    python3 make_app_icon.py <outdir> [source.png]
 """
-import struct, sys, os
-
-# --- 极简 PNG 编码器（zlib + 手写 chunk，避免 Pillow 版本差异影响可复现）---
+import os
+import struct
+import sys
 import zlib
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_SOURCE = os.path.join(HERE, "assets", "AppIcon-1024.png")
 
-def png(width, height, pixels):
-    """pixels: list of rows, each row = list of (r,g,b,a). RGBA8."""
+# All slots iOS 15/16 may ask for on iPhone + iPad.  Every entry is
+# (filename, pixel size, scale, point size, idiom).
+SPECS = [
+    ("Icon20x20@2x.png", 40, 2, 20, "iphone"),
+    ("Icon20x20@3x.png", 60, 3, 20, "iphone"),
+    ("Icon29x29@2x.png", 58, 2, 29, "iphone"),
+    ("Icon29x29@3x.png", 87, 3, 29, "iphone"),
+    ("Icon40x40@2x.png", 80, 2, 40, "iphone"),
+    ("Icon40x40@3x.png", 120, 3, 40, "iphone"),
+    ("Icon60x60@2x.png", 120, 2, 60, "iphone"),
+    ("Icon60x60@3x.png", 180, 3, 60, "iphone"),
+    ("Icon76x76@2x.png", 152, 2, 76, "ipad"),
+    ("Icon83.5x83.5@2x.png", 167, 2, 83.5, "ipad"),
+    ("Icon1024.png", 1024, 1, 1024, "ios-marketing"),
+]
+
+
+def decode_png(path):
+    """Decode an 8-bit RGBA/RGB PNG into (width, height, rows-of-RGBA)."""
+    data = open(path, "rb").read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("not a PNG: " + path)
+    pos, idat = 8, []
+    width = height = None
+    color_type = bit_depth = None
+    palette = None
+    while pos < len(data):
+        (length,) = struct.unpack(">I", data[pos:pos + 4])
+        ctype = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if ctype == b"IHDR":
+            width, height, bit_depth, color_type, comp, filt, interlace = struct.unpack(">IIBBBBB", chunk)
+            if interlace != 0:
+                raise ValueError("interlaced PNG not supported")
+            if bit_depth != 8:
+                raise ValueError("only 8-bit PNG supported")
+        elif ctype == b"PLTE":
+            palette = [tuple(chunk[i:i + 3]) for i in range(0, len(chunk), 3)]
+        elif ctype == b"IDAT":
+            idat.append(chunk)
+        elif ctype == b"IEND":
+            break
+    raw = zlib.decompress(b"".join(idat))
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color_type]
+    stride = width * channels
+    rows, prev, p = [], bytearray(stride), 0
+
+    def paeth(a, b, c):
+        pa, pb, pc = abs(b - c), abs(a - c), abs(a + b - 2 * c)
+        if pa <= pb and pa <= pc:
+            return a
+        return b if pb <= pc else c
+
+    for _ in range(height):
+        ft = raw[p]
+        p += 1
+        line = bytearray(raw[p:p + stride])
+        p += stride
+        if ft == 0:
+            pass
+        elif ft == 1:
+            for i in range(channels, stride):
+                line[i] = (line[i] + line[i - channels]) & 0xFF
+        elif ft == 2:
+            for i in range(stride):
+                line[i] = (line[i] + prev[i]) & 0xFF
+        elif ft == 3:
+            for i in range(stride):
+                left = line[i - channels] if i >= channels else 0
+                line[i] = (line[i] + ((left + prev[i]) >> 1)) & 0xFF
+        elif ft == 4:
+            for i in range(stride):
+                left = line[i - channels] if i >= channels else 0
+                up = prev[i]
+                ul = prev[i - channels] if i >= channels else 0
+                line[i] = (line[i] + paeth(left, up, ul)) & 0xFF
+        else:
+            raise ValueError("bad PNG filter %d" % ft)
+        prev = line
+        # Normalise every row to RGBA.
+        if channels == 4:
+            rows.append(bytes(line))
+        else:
+            out = bytearray(width * 4)
+            for x in range(width):
+                if channels == 3:
+                    r, g, b = line[x * 3:x * 3 + 3]
+                    a = 255
+                elif channels == 1:
+                    if color_type == 3:
+                        r, g, b = palette[line[x]]
+                    else:
+                        r = g = b = line[x]
+                    a = 255
+                else:  # gray+alpha
+                    r = g = b = line[x * 2]
+                    a = line[x * 2 + 1]
+                o = x * 4
+                out[o:o + 4] = bytes((r, g, b, a))
+            rows.append(bytes(out))
+    return width, height, rows
+
+
+def crop(rows, x0, y0, w, h):
+    return [r[x0 * 4:(x0 + w) * 4] for r in rows[y0:y0 + h]]
+
+
+def resize_area(rows, sw, sh, dw, dh):
+    """Separable box/area resample.  Good for downscaling, exact for equal size."""
+    if sw == dw and sh == dh:
+        return rows
+    # Horizontal pass: source rows -> dw wide (integer accumulation).
+    tmp = []
+    xmap = []
+    for dx in range(dw):
+        a = dx * sw / dw
+        b = (dx + 1) * sw / dw
+        xmap.append((a, b))
+    for row in rows:
+        out = bytearray(dw * 4)
+        for dx, (a, b) in enumerate(xmap):
+            ia, ib = int(a), int(b - 1e-9)
+            if ib < ia:
+                ib = ia
+            r = g = bl = al = 0
+            n = 0
+            for sx in range(ia, min(ib + 1, sw)):
+                o = sx * 4
+                r += row[o]
+                g += row[o + 1]
+                bl += row[o + 2]
+                al += row[o + 3]
+                n += 1
+            o = dx * 4
+            out[o:o + 4] = bytes((r // n, g // n, bl // n, al // n))
+        tmp.append(bytes(out))
+    # Vertical pass.
+    out_rows = []
+    for dy in range(dh):
+        a = dy * sh / dh
+        b = (dy + 1) * sh / dh
+        ia, ib = int(a), int(b - 1e-9)
+        if ib < ia:
+            ib = ia
+        ys = range(ia, min(ib + 1, sh))
+        n = len(ys)
+        line = bytearray(dw * 4)
+        for x in range(dw):
+            r = g = bl = al = 0
+            for sy in ys:
+                row = tmp[sy]
+                o = x * 4
+                r += row[o]
+                g += row[o + 1]
+                bl += row[o + 2]
+                al += row[o + 3]
+            o = x * 4
+            line[o:o + 4] = bytes((r // n, g // n, bl // n, al // n))
+        out_rows.append(bytes(line))
+    return out_rows
+
+
+def encode_png(width, height, rows):
     raw = bytearray()
-    for row in pixels:
-        raw.append(0)  # filter type 0
-        for (r, g, b, a) in row:
-            raw += bytes((r, g, b, a))
+    for row in rows:
+        raw.append(0)
+        raw += row
 
-    def chunk(typ, data):
-        c = struct.pack(">I", len(data)) + typ + data
-        return c + struct.pack(">I", zlib.crc32(typ + data) & 0xFFFFFFFF)
+    def chunk(typ, payload):
+        c = struct.pack(">I", len(payload)) + typ + payload
+        return c + struct.pack(">I", zlib.crc32(typ + payload) & 0xFFFFFFFF)
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n"
@@ -31,94 +207,19 @@ def png(width, height, pixels):
             + chunk(b"IEND", b""))
 
 
-BG = (17, 24, 39, 255)       # #111827 深墨蓝
-BG_EDGE = (31, 41, 55, 255)  # #1f2937 描边
-FG = (249, 250, 251, 255)    # #f9fafb 近白
-ACCENT = (56, 189, 248, 255) # #38bdf8 强调蓝
-
-
-def inside_round_rect(x, y, w, h, r):
-    """点是否落在圆角矩形内（含边）。"""
-    if x < 0 or y < 0 or x >= w or y >= h:
-        return False
-    # 四角圆判定
-    cx = min(x, w - 1 - x)
-    cy = min(y, h - 1 - y)
-    if cx < r and cy < r:
-        dx, dy = r - cx, r - cy
-        return dx * dx + dy * dy <= r * r
-    return True
-
-
-def render(S):
-    """渲染 S x S 图标。"""
-    px = [[(0, 0, 0, 0) for _ in range(S)] for _ in range(S)]
-    r = int(S * 0.22)  # iOS 圆角比例
-    # 1) 圆角方底（先铺边色，再铺内色留出 1px 描边感）
-    for y in range(S):
-        for x in range(S):
-            if inside_round_rect(x, y, S, S, r):
-                px[y][x] = BG
-    # 2) ">" 提示符：两条平行四边形笔画，占中间偏左
-    #    坐标按 S 归一化，保证各尺寸一致
-    def poly(points, color):
-        # 逐像素点在多边形内判定（图形很小，直接扫描整幅即可）
-        minx = min(p[0] for p in points); maxx = max(p[0] for p in points)
-        miny = min(p[1] for p in points); maxy = max(p[1] for p in points)
-        for yy in range(max(0, int(miny)), min(S, int(maxy) + 2)):
-            for xx in range(max(0, int(minx)), min(S, int(maxx) + 2)):
-                # 射线法
-                inside = False
-                n = len(points)
-                for i in range(n):
-                    x1, y1 = points[i]
-                    x2, y2 = points[(i + 1) % n]
-                    if (y1 > yy) != (y2 > yy):
-                        xin = x1 + (yy - y1) * (x2 - x1) / (y2 - y1)
-                        if xx <= xin:
-                            inside = not inside
-                if inside and inside_round_rect(xx, yy, S, S, r):
-                    px[yy][xx] = color
-
-    A = S * 0.26; B = S * 0.44; T = S * 0.30; M = S * 0.37; D = S * 0.47
-    th = max(2.0, S * 0.062)  # 笔画厚度
-    # ">" 上斜
-    poly([(A, T), (A + th, T - th * 0.15), (B + th * 0.4, M - th * 0.5),
-          (B, M + th * 0.5)], FG)
-    # ">" 下斜
-    poly([(A, D - th * 0.5), (A + th, D + th * 0.35), (B + th * 0.4, M + th * 0.5),
-          (B, M - th * 0.5)], FG)
-    # 3) "_" 光标：一条横条
-    x0 = int(S * 0.53); x1 = int(S * 0.74)
-    y0 = int(S * 0.66); y1 = int(y0 + max(2.0, S * 0.062))
-    for yy in range(y0, min(S, y1)):
-        for xx in range(x0, min(S, x1)):
-            if inside_round_rect(xx, yy, S, S, r):
-                px[yy][xx] = FG
-    # 4) 左下角强调圆点
-    cx, cy, rad = S * 0.245, S * 0.735, S * 0.045
-    for yy in range(int(cy - rad - 1), int(cy + rad + 2)):
-        for xx in range(int(cx - rad - 1), int(cx + rad + 2)):
-            if 0 <= xx < S and 0 <= yy < S and (xx - cx) ** 2 + (yy - cy) ** 2 <= rad * rad:
-                if inside_round_rect(xx, yy, S, S, r):
-                    px[yy][xx] = ACCENT
-    return png(S, S, px)
-
-
 def main():
     outdir = sys.argv[1] if len(sys.argv) > 1 else "."
+    src = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_SOURCE
     os.makedirs(outdir, exist_ok=True)
-    # iOS 需要的图标尺寸（2x/3x 的像素边长）
-    specs = {
-        "Icon60x60@2x.png": 120,
-        "Icon60x60@3x.png": 180,
-        "Icon76x76@2x.png": 152,
-        "Icon83.5x83.5@2x.png": 167,
-        "Icon1024.png": 1024,
-    }
-    for name, size in specs.items():
+    sw, sh, rows = decode_png(src)
+    if (sw, sh) != (1024, 1024):
+        raise SystemExit("expected 1024x1024 official tile, got %dx%d" % (sw, sh))
+    cache = {}
+    for name, size, _scale, _pt, _idiom in SPECS:
+        if size not in cache:
+            cache[size] = resize_area(rows, sw, sh, size, size)
         with open(os.path.join(outdir, name), "wb") as f:
-            f.write(render(size))
+            f.write(encode_png(size, size, cache[size]))
         print("  %-26s %dx%d" % (name, size, size))
 
 

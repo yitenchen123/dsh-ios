@@ -3,16 +3,17 @@
  * dsh-ios phone-bridge —— 设备本机 MCP 工具链（Streamable HTTP）
  *
  * 目的：用户要求「启动 DSH 让 DSH 操作手机，能够直接调用相关工具链」。
- * 原先的方案要求用户额外安装第三方 witchan/ios-mcp 并手动装配置插件，
+ * 早期方案要求用户额外安装第三方 witchan/ios-mcp 并手动装配置插件；现在原生能力随包提供，
  * 不满足「启动即可用」。本服务把能力分成两层，用一个固定回环端点统一暴露：
  *
  *   A 层（本文件原生实现，纯 Node，无需任何第三方原生组件）：
  *     设备信息 / 目录 / 读写文件 / 执行命令 / App 列表 / 启动 App /
  *     打开 URL / 进程 / 系统日志 / DSH 自身状态 / bridge 状态
  *   B 层（真·看屏幕、点屏幕、UI 树、OCR、剪贴板、亮度音量…）：
- *     转发到上游原生 ios-mcp（默认 http://127.0.0.1:8090/mcp）。
- *     上游在线时，它的工具会合并进 tools/list；tools/call 原样转发。
- *     上游离线时这些工具不出现，并给出明确的安装/启动指引。
+ *     转发到随包安装的原生 SpringBoard 插件 dsh-ios-control
+ *     （默认 http://127.0.0.1:8090/mcp）。插件由 dev.airdevs.dsh-app 一起装，
+ *     安装后 respring 一次即加载；在线时工具合并进 tools/list，tools/call 原样转发。
+ *     离线时这些工具不出现，并给出明确的 respring / 状态检查指引。
  *
  * 为什么固定 8091：8090 是第三方 ios-mcp 的默认端口，不能抢占。
  * DSH 侧 cordis.patch.yml 由 ensure-config.cjs 自动注册到 127.0.0.1:8091/mcp。
@@ -237,7 +238,7 @@ async function callLocal(name, args) {
             if (r.code === 0 && r.stdout.trim()) return textResult({ source: 'log show', lines: r.stdout });
             return textResult({
                 available: false,
-                hint: 'No usable system log tool on this device. Install witchan/ios-mcp and use get_syslog / get_crash_logs from the upstream MCP server instead.',
+                hint: 'No usable system log tool on this device. The bundled provider ships /var/jb/usr/bin/mcp-logreader; check dsh-phone-bridge-ctl status.',
                 fallback_output: r.stderr.slice(0, 500)
             });
         }
@@ -381,7 +382,7 @@ async function dispatch(msg, res) {
                 protocolVersion: PROTOCOL,
                 capabilities: { tools: { listChanged: false } },
                 serverInfo: { name: 'dsh-ios-phone-bridge', version: '1.0.0' },
-                instructions: 'On-device iOS toolchain for DSH. A-class tools work out of the box; B-class (screen/touch/OCR) are forwarded to witchan/ios-mcp when it is running on 127.0.0.1:8090.'
+                instructions: 'On-device iOS toolchain for DSH. A-class tools work out of the box; B-class (screen/touch/OCR) come from the bundled SpringBoard provider dsh-ios-control on 127.0.0.1:8090 (shipped with dev.airdevs.dsh-app; respring once after install).'
             });
         case 'ping':
             return reply(res, msg.id, {});
@@ -401,11 +402,12 @@ async function dispatch(msg, res) {
             if (up.some((t) => t.name === name)) return reply(res, msg.id, await upstreamCall(name, args));
             if (UPSTREAM_HINT_TOOLS.includes(name)) {
                 return reply(res, msg.id, textResult({
-                    error: 'B-class tool "' + name + '" requires the native witchan/ios-mcp service on 127.0.0.1:8090.',
+                    error: 'B-class tool "' + name + '" requires the bundled native provider dsh-ios-control on 127.0.0.1:8090.',
                     how_to_enable: [
-                        'Install the rootless iphoneos-arm64 deb from https://github.com/witchan/ios-mcp',
-                        'Respring, then enable the service in Settings -> iOS MCP',
-                        'Keep the device unlocked; this bridge will auto-merge its tools on the next tools/list'
+                        'The provider ships in dev.airdevs.dsh-app (dsh-ios-control.dylib + plist)',
+                        'After installing/upgrading, respring once so ElleKit loads it into SpringBoard',
+                        'Check dsh-phone-bridge-ctl status; it reports upstream online + tool count',
+                        'Keep the device unlocked; the bridge auto-merges tools on the next tools/list'
                     ],
                     local_alternatives: ['run_command', 'list_apps', 'launch_app', 'open_url', 'get_device_info', 'dsh_status']
                 }, true));

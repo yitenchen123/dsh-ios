@@ -1,31 +1,17 @@
 Package: dev.airdevs.dsh-app
-Name: DSH App (SpringBoard + KeepAlive)
-Version: 0.2.1-rc.5+ios16
+Name: DeepSeek Harness
+Version: 0.2.1-rc.5+ios18
 Section: Applications
 Priority: optional
 Architecture: iphoneos-arm64
 Maintainer: Air-Devs <air2@localhost>
-Depends: dev.airdevs.dsh (>= 0.2.1-rc.5+ios15)
-Description: Installs a real SpringBoard app + a launchd-managed DSH daemon.
- This is the "IPA made into a deb" layout used by UTM / JBDev / Theos:
- an arm64 .app bundle is placed in /var/jb/Applications/DSH.app, the
- postinst pseudo-signs its executable with the on-device ldid (no Apple
- certificate needed), and uicache registers it so the icon appears on the
- Home Screen. Tapping the icon opens the DSH Web UI.
- The actual DSH host no longer depends on a terminal session: a
- LaunchDaemon (RunAtLoad + KeepAlive + ThrottleInterval) starts it at
- jailbreak time, restarts it the moment it is killed by jetsam, and keeps
- it alive after the terminal app is closed. Type `dsh` still works.
- dsh-app-ctl status|start|stop|restart|log|enable|disable manages it.
- Also ships the on-device phone-control toolchain: a pure-Node MCP server
- (127.0.0.1:8091, its own KeepAlive LaunchDaemon) plus an idempotent
- registration of the dsh-mcp-client config into $DSH_HOME patch files.
- Starting DSH by any means then exposes mcp__ios__* tools: device info,
- shell, files, app list/launch, URL schemes and DSH status work out of the
- box; screen/touch/OCR tools are forwarded to witchan/ios-mcp on 8090
- when that optional native service is running. Disable with
- dsh-phone-bridge-ctl config-off and dsh-phone-bridge-ctl disable.
- No Apple signing identity is used. Everything is plain files: plist,
- shell, one small arm64 Mach-O launcher, and PNG icons. Build is
- byte-reproducible from sh build-app.sh (SOURCE_DATE_EPOCH pinned).
-Homepage: https://github.com/yitenchen123/dsh-ios
+Depends: dev.airdevs.dsh (>= 0.2.1-rc.5+ios14)
+Description: The DeepSeek Harness app for iOS, in the official app's form.
+ One app icon on the Home Screen. Tapping it starts the on-device Harness
+ host (no terminal, no separate plugin), resolves the launch token and shows
+ the unchanged DSH Web UI. Workspace, sessions and plugins stay server-side.
+ The native app shell (SFSafariViewController), the setuid daemon helper and
+ the launchd keep-alive daemon are all part of this package; the 125 MB
+ Node/DSH runtime is the existing dev.airdevs.dsh engine dependency (the
+ same role Electron's bundled Node plays in the official desktop app).
+ Homepage: https://github.com/yitenchen123/dsh-ios

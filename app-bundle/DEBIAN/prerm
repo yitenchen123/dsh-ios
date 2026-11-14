@@ -1,17 +1,23 @@
 #!/bin/sh
-# prerm — 卸载前停止 daemon、注销图标；保留 $DSH_HOME 里的会话与配置。
+# prerm — 卸载/升级处理。
+#   upgrade: 不动服务（postinst 会 stop/enable 加载新 plist）
+#   remove/purge: 停 daemon，移除 APP 的 helper 与旧的独立插件文件；
+#                 保留 $DSH_HOME 里的会话/配置。
 set -e
 JB=/var/jb
 CTL="$JB/usr/bin/dsh-app-ctl"
-BRCTL="$JB/usr/bin/dsh-phone-bridge-ctl"
+case "${1:-remove}" in
+    upgrade|failed-upgrade|abort-upgrade)
+        exit 0
+        ;;
+esac
+
 if [ -x "$CTL" ]; then
     "$CTL" disable >/dev/null 2>&1 || true
 fi
-# 顺带停用工具链 daemon 并移除自动注册的 MCP 配置（保留用户其它 patch 块）
-if [ -x "$BRCTL" ]; then
-    "$BRCTL" disable >/dev/null 2>&1 || true
-    "$BRCTL" config-off >/dev/null 2>&1 || true
-fi
+rm -f "$JB/usr/bin/dsh-app-helper" \
+      "$JB/Library/MobileSubstrate/DynamicLibraries/dsh-ios-control.dylib" \
+      "$JB/Library/MobileSubstrate/DynamicLibraries/dsh-ios-control.plist" 2>/dev/null || true
 if [ -L "$JB/bin/dsh-app-ctl" ]; then
     rm -f "$JB/bin/dsh-app-ctl" 2>/dev/null || true
 fi

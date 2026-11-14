@@ -18,6 +18,16 @@ export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=384}"
 
 mkdir -p "$DSH_HOME/logs" 2>/dev/null || true
 
+# 如果已经有 dsh（例如用户在终端里手动启动的）在服务同一端口，就不要
+# 再起第二个实例抢端口 —— 否则 launchd 的 KeepAlive 会变成崩溃重启循环。
+# 待机期间每 30s 探一次；原实例退出后自动接管。
+PORT="${DSH_WEB_PORT:-3080}"
+if [ -x "$JB/usr/bin/dsh-app-ctl" ]; then
+    while "$JB/usr/bin/dsh-app-ctl" ping >/dev/null 2>&1; do
+        sleep 30 2>/dev/null || sleep 30
+    done
+fi
+
 # 关键：launchd 管的是「这一个进程」，所以必须 exec，不能留一层 shell。
 # dsh 入口自身不带 exec（要留一次 SIGBUS 自动降级机会），它是这条链上
 # 唯一的中间进程；dsh-app-ctl 用 pkill/pgrep 时也以它为锚点。
