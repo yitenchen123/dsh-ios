@@ -7,7 +7,9 @@
 > **本次新增 `+ios16` 交付**（见下一章）：① `0.2.2-rc.1` 最新版 DSH 可选升级包；② `dev.airdevs.dsh-app` —— UTM 式「把 .app 做成 deb」的桌面 APP + launchd 保活；③ 内置的手机操控工具链，启动 DSH 即可直接调用 `mcp__ios__*` 工具。
 > 关于 Node 24.9：**（rc.1 时代的历史结论）** 当时公开可得的 iOS arm64 Node 可执行文件确实不存在（详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)），但实证发现官方 `0.2.2-rc.1` 的四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，因此用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 31 项核验（含真 boot、会话创建与恢复）的完整升级包。
 >
-> **⚠️ 2026-11-14 更正**：上面「不存在」的结论已被本仓库自己的 CI 推翻 —— GitHub Actions run `43532556241` 成功编译出 **Node v24.19.0 iOS arm64 独立 CLI**（artifact `14095226518` / Release `node24-exp`，SHA `8bebb2a2…`）。且 rc.3 的 `engines.node >= 24.9.0` **不是 advisory**（`bin.js` 用 `import.meta.main`）。故 rc.3 单包已改用该成品，档位为 `+ios24`，详见「最新修复」章与 `one-package/README.md`。
+> **⚠️ 2026-11-14 更正**：上面「不存在」的结论已被本仓库自己的 CI 推翻 —— GitHub Actions run `43532556241` 成功编译出 **Node v24.19.0 iOS arm64 独立 CLI**（artifact `14095226518` / Release `node24-exp`，SHA `8bebb2a2…`）。且 rc.3 的 `engines.node >= 24.9.0` **不是 advisory**（`bin.js` 用 `import.meta.main`）。故 rc.3 单包已改用该成品。首版 `+ios24` 在 A11 真机上暴露运行时不兼容，
+**当前推荐档位是 `+ios24.1`**（第二轮真机回归修复版），详见下方新章与
+`one-package/README.md`。
 
 ---
 
@@ -69,7 +71,7 @@
 | 验证 | 结果 |
 | --- | --- |
 | `sh app-bundle/verify-app.sh` | **77 项 0 失败**（含全屏 Web Clip、setuid、两次构建可复现、稳定主包 SHA 未变） |
-| `sh one-package/verify-one-package.sh <deb> <bundle> app-bundle/payload` | **55 项 0 失败**（含两次构建 SHA 一致） |
+| `DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh <deb> <bundle> app-bundle/payload` | **88 项 0 失败**（含 Node 24 运行时断言、升级路径断言、两次构建 SHA 一致） |
 | 静态 Web Clip URL 鉴权黑盒（deb 内真实 rc.3 `BrowserAuth`） | 无 token→`401`；静态 URL→`303 + Set-Cookie`；带 cookie→放行；`/connect`→`302 + Set-Cookie` |
 | `sh app-bundle/verify-no-data-touch.sh` | 17 个预置用户数据文件 SHA-256 / mode / 属主 / 目录结构**逐项一致**；`cordis.patch.yml` 用户块完好；无 MCP 块注入 |
 | 稳定底座 | `dev.airdevs.dsh_0.2.1-rc.5+ios15` SHA `67d54667…` 未变；主包 payload 完全未改 |
@@ -84,19 +86,20 @@
 #   SHA 8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
 sh app-bundle/build-app.sh                     # 独立 APP 小包（全屏 Web Clip + 保活）
 sh app-bundle/verify-app.sh
-NODE_IOS_BIN=/path/to/node-v24.19.0-iphoneos-arm64-jit DSH_IOS_TAG=ios24 \
+NODE_IOS_BIN=/path/to/node-v24.19.0-iphoneos-arm64-jit DSH_IOS_TAG=ios24.1 \
   sh one-package/build-one-package.sh \
     bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz \
     app-bundle/payload \
-    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
-DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
-    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24.1_iphoneos-arm64.deb
+DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh \
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24.1_iphoneos-arm64.deb \
+    bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload
 ```
 
 装完点桌面「DeepSeek Harness」全屏图标即用，不需要终端。已有对话、
 工作区、插件、配置、npm 源、插件市场区域设置全部保留。
 
-> **请装 `+ios24`，不要装 `+ios18`**：rc.3 的 `engines.node >= 24.9.0`
+> **请装 `+ios24.1`，不要装 `+ios18` 或首版 `+ios24`**：rc.3 的 `engines.node >= 24.9.0`
 > 不是 advisory —— `lib/bin.js` 用了 `import.meta.main`（Node 24.2+ 才
 > 支持），22.12.0 上 `dsh web` 起不来。之前把该字段当成软提示，是误判。
 > 更正见 `one-package/README.md` 顶部「两个档位」与
@@ -109,11 +112,38 @@ DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
 > 未做真机验证，**不承诺 A11 100% 成功**。③ rc.3 bundle 不在本分支
 > （`.gitignore` 忽略大文件），需从 `exp/node24` 分支或 Release 附件获取。
 > ④ Node 24.19.0 是 **GitHub Actions 编译成功**（`success`），不是 A11 真机
-> 验证成功：JIT entitlement / 后台线程 W^X 在 iOS 16.7.15 上零验证；该
-> 二进制按 `--without-npm --without-inspector --with-intl=small-icu` 等
-> 裁剪，启动略慢、非英语 `Intl` 受限。本机 Linux 交叉编译是独立支线
-> （`exp/node24`），尚未产出可执行文件。唯一真机验证过的组合仍是
-> `+ios15`（rc.5 + Node 22.12.0），未做任何改动。
+> 验证成功。第二轮真机截图已证明：即便 `dynamic-codesigning` 已签，
+> A11 上四档原生 JIT 仍全部 `SIGBUS(138)`，必须走 `--jitless` 零 JIT 档；
+> 详见下一章。该二进制按 `--without-npm --without-inspector
+> --with-intl=small-icu` 等裁剪，启动略慢、非英语 `Intl` 受限。唯一真机
+> 验证过的组合仍是 `+ios15`（rc.5 + Node 22.12.0），未做任何改动。
+
+---
+
+## 第二轮真机回归 · `+ios24.1`（2026-11-14）
+
+用户装的是**首版 `+ios24`**（明确说过之前那张安装截图给错了）。三张真机
+截图：全屏 Web Clip 只有一行 `dsh web authentication required; reopen the URL
+printed by dsh web.`；终端 `dsh` → `Bus error: 10`；`dsh-doctor` 抬头
+`+ios15`、`OK=17 FAIL=12`。逐条追到文件级根因：
+
+| 症状 | 根因 | 修复 |
+| --- | --- | --- |
+| `dsh` / daemon 起不来 | 单包把稳定底座 `tier.sh` / `usr/bin/pnpm` / 插件子进程 `__dshPnpmFlags` 原样带进来，里面都有 `--no-expose-wasm`。该 V8 flag 在 Node 24 已删除 → `bad option` 退出 9；A11 上其它四档全 SIGBUS，唯一能活的零 JIT 档被挡死 | `make_node24_runtime.py` 只改 stage 副本：去掉废参数、部署 `node-safe`（`--jitless + fetch-shim`）、全档失败兜底 `nowasm`；**共享 `payload/` / `shims/` 一字节不动**，`+ios15` SHA 仍是 `67d54667…` |
+| doctor 12 个 FAIL | doctor 硬编码 `+ios15` / Node 22.12.0 的 `101,297,040` 字节 / DSH `0.2.1-rc.5`，且大量检查裸跑 node 在 A11 连锁 SIGBUS（多数是误报） | doctor 改为 rc.3 / Node 24 版本感知，短命调用统一走 `NODE_SAFE`；Linux Node 24 沙箱实跑 **27 OK / 0 FAIL** |
+| 全屏图标 401 黑页 | postinst 只 `enable`（`kickstart` 不带 `-k`），升级后 3080 上仍是旧 daemon（随机 `launchToken`）；旧 Web Clip 被 SpringBoard 缓存 | extras 强制 `bootout` + 清孤儿进程 + 删旧 Web Clip + 重写带固定 token 的新 Web Clip + `kickstart -k` + 真探 `303/200` |
+
+**验证**：`+ios24.1` 单包 **88 项 0 失败**、两次构建 SHA 一致
+（`f25f1acd…`）、APP 包 **77 项 0 失败**、稳定底座与 `+ios18` 逐字节未变、
+`401 → 303 + Cookie → 200` 鉴权黑盒通过、装/卸零写入实测通过。Linux x64
+的 Node 24.19.0 上另实跑了 `--jitless` 下的 `web` 监听 / `smoke.js` /
+`pnpm --version` / `node:sqlite` / 前端垫片 `--check`。
+
+**已装首版的用户**：把 `dist/fix-ios24.sh` 传到手机，`sh fix-ios24.sh` 就地
+修好（幂等、零写入 `$DSH_HOME`），再 `respring` 一次；或重装 `+ios24.1`。
+
+> **仍然不承诺 A11 100% 成功**：零 JIT 档在真机上的最终表现、SpringBoard
+> 对 Web Clip 的缓存刷新时机，还需要用户装包 / 跑热修后回传截图确认。
 
 ---
 

@@ -1,12 +1,17 @@
 # dsh-ios 交付物 SHA-256
-# 生成时间: 2026-11-11 UTC（2026-11-14 更新全屏单包与 APP 包）
+# 生成时间: 2026-11-11 UTC（2026-11-14 更新全屏单包与 APP 包；同日第二轮真机回归）
 # 稳定底座: dsh 0.2.1-rc.5 / Node 22.12.0 / +ios15（真机验证，交付物字节未变）
 # 新增 +ios16: dsh 0.2.2-rc.1 可选升级包 / 桌面 APP + 保活 + 手机操控工具链
 # 最新 rc.3 全屏单包: DSH 0.2.2-rc.3 + 真全屏 Web Clip + 固定 loopback token
 #   + 零写入 $DSH_HOME（详见 one-package/README.md）
 # 重要：rc.3 的 engines.node >= 24.9.0 且 bin.js 用 import.meta.main，
-#   +ios18 档内置的 Node 22.12.0 不满足，CLI 起不来；请用 +ios24 档
+#   +ios18 档内置的 Node 22.12.0 不满足，CLI 起不来；请用 +ios24.1 档
 #   （内置 GitHub Actions 成功构建的 Node v24.19.0 iOS arm64）。
+# 2026-11-14 第二轮真机回归：首版 +ios24 在 iPhone X / A11 上四档原生 JIT
+#   全 SIGBUS(138)，且 tier.sh / pnpm / 插件子进程的 --no-expose-wasm 在
+#   Node 24 已被删除（bad option, rc=9），令唯一可用的零 JIT 档也起不来；
+#   升级脚本又不强制换掉旧 daemon，导致固定 token 的 Web Clip 收到 401。
+#   +ios24.1 修掉以上全部，并附就地热修 fix-ios24.sh（不必重装 deb）。
 # 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
 #       DSH_VER=0.2.2-rc.1 sh bootstrap.sh && DSH_VER=0.2.2-rc.1 sh build.sh
 #       sh app-bundle/build-app.sh && sh app-bundle/verify-app.sh
@@ -17,7 +22,7 @@
 # 独立核验: sh verify-deb.sh [deb路径]          两个 deb 各 57 项
 #           sh verify-022.sh <tree> <node22.12>  0.2.2 树 31 项（含真 boot）
 #           sh app-bundle/verify-app.sh           APP 包 77 项
-#           sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 70 项
+#           DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 88 项
 #           sh app-bundle/verify-no-data-touch.sh  装/卸零写入实测
 #           sh phone-bridge/verify-phone-bridge.sh 工具链 28 项
 #           sh verify-phone-control.sh           旧接入方案 25 项
@@ -41,18 +46,37 @@ f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.ds
 927b5308dbf5800ddd455b354774dc64de9fd1eb45c7c9d3f4acc442ae7406f7  dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
 44a3e3e4a7d56e7d9e550ffd78f84f9c485a4d8fd8e8219212cc28640cfd8978  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.2-rc.3+ios18_iphoneos-arm64.deb
 
-# --- rc.3 + Node v24.19.0（推荐）：与 +ios18 并列，不覆盖任何已发布包 ---
+# --- rc.3 + Node v24.19.0 首版（已被 +ios24.1 取代，仅留作对照档）---
 # node 来源：GitHub Actions run 43532556241（success, main）产物
 #   artifact 14095226518 / Release node24-exp
 #   node-v24.19.0-iphoneos-arm64-jit  SHA 8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
-# 2026-11-14 真机回归修复：本包补齐了稳定底座 build.sh 一直在打、但单包
-#   构建链漏打的全套兼容补丁（Safari16 垫片 / 插件市场 redirect+主线程解析 /
+# 该首版补齐了全套兼容补丁（Safari16 垫片 / 插件市场 redirect+主线程解析 /
 #   git 预检短路 / pnpm 绝对路径 / 手动安装转化钩子）+ 内置 libexec/pnpm，
-#   并给 Web Clip 补 Title、隐藏半屏 native APP。修真机四症状：
-#   插件市场全 fetch failed / AbortSignal.any / pnpm 环境 / 两个图标半屏。
-# 构建：NODE_IOS_BIN=<node> DSH_IOS_TAG=ios24 sh one-package/build-one-package.sh \
-#         bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload <out.deb>
+#   并给 Web Clip 补 Title、隐藏半屏 native APP；但仍带 +ios15 运行时脚本，
+#   在 A11 上被 Node 24 已删除的 --no-expose-wasm 挡死零 JIT 档（见下方）。
 5fdb35be7ddface317ea75ba4e521c0be5a8f16d3e09b7412c817641cf079f37  dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
+
+# --- rc.3 + Node v24.19.0（推荐 · A11 第二轮真机回归修复）---
+# 2026-11-14 真机三症状与文件级根因：
+#   ① dsh Bus error: 10 /「所有 V8 启动档位都在 WASM 冒烟探针里失败了」
+#      -> tier.sh、usr/bin/pnpm、插件子进程 __dshPnpmFlags 里的
+#         --no-expose-wasm 在 Node 24 / V8 13.x 已删除，nowasm 档 rc=9；
+#         A11 上 native/single/balanced/safe 四档全 SIGBUS(138)。
+#   ② dsh-doctor 抬头 +ios15、12 个 FAIL（82,539,696 字节被说成异常）
+#      -> doctor 是从稳定底座原样复制的，硬编码 Node 22.12.0 / rc.5，
+#         且大量短命检查裸跑 node（不带零 JIT）在 A11 连锁 SIGBUS。
+#   ③ 全屏图标打开只有 401 黑页「dsh web authentication required」
+#      -> postinst 只 enable（kickstart 不带 -k），旧 daemon 继续用随机
+#         launchToken 占着 3080；旧 Web Clip 还被 SpringBoard 缓存。
+# 修复：make_node24_runtime.py 去掉废参数、部署 node-safe（--jitless +
+#   fetch-shim）、doctor 改 rc.3/Node24 感知；extras-postinst 强制 bootout +
+#   kickstart -k、清理旧 Web Clip、用固定 token 真探 303/200。
+# 稳定底座 +ios15（67d54667…）与 +ios18（927b5308…）逐字节未变。
+# 构建：NODE_IOS_BIN=<node> DSH_IOS_TAG=ios24.1 sh one-package/build-one-package.sh \
+#         bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload <out.deb>
+# 核验：DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh <deb> <bundle> app-bundle/payload
+f25f1acdeb672977022003fa3029a2a011210a30934828a623c407e2252dd4f3  dev.airdevs.dsh_0.2.2-rc.3+ios24.1_iphoneos-arm64.deb
+b6fee3c62af350ffbdb463f80b6dca87961505a537b53622111bd552523f1b99  fix-ios24.sh
 
 # --- 可选生态插件（手动安装，不预装）---
 f9f74e0f485148acfe544b88e35c17da196b6ff4c6da4f7a6576a7c566cd068a  dsh-ios-phone-control-0.1.0.tgz

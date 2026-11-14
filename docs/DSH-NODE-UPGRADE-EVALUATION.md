@@ -173,3 +173,34 @@ sh verify-022.sh .build/stage/var/jb/usr/lib/dsh /path/to/node-22.12.0
 5. 真机跑 `dsh-doctor` 全量检查后再作为日常底座。
 
 前三条已在本仓库完成，后两条属于设备侧动作。
+
+---
+
+## 7. 2026-11-14 补充：Node 24.19.0 在 A11 上的真机证据（修正第 2、3 节边界）
+
+第 2 节表格里「JIT / W^X / llhttp WASM 零验证」的状态现在**有了真机证据，
+而且是否定的**。用户装上 rc.3 全屏单包（内置 GitHub Actions 编出的
+v24.19.0，`Mach-O arm64` + JIT entitlements 已签）后回传的截图显示：
+
+| 实测 | 结论 |
+| --- | --- |
+| `dsh-doctor` 档位探测：`native / single / balanced / safe` 全 `rc=138`（SIGBUS），`--expose-internals` 探针也 `Bus error: 10` | **Node 24 的原生 JIT 在 iPhone X / A11 / iOS 16.7.x / Dopamine rootless 上不可用**，`dynamic-codesigning` 已签也不改变 W^X 结果 |
+| `nowasm` 档 `rc=9`（`bad option`） | `tier.sh` / `pnpm` / 插件子进程注入的 `--no-expose-wasm` 是 Node 22 时代的 V8 flag，**Node 24 / V8 13.x 已删除**；唯一能活的零 JIT 档被这一个废参数挡死 |
+| `node -v` 正常、`node --version` 正常，一执行 JS 就 SIGBUS | 与 22.12.0 时代的现象一致：轻量命令不分配可执行页，真 boot 才触发 |
+
+因此「条件 A（和 22.12.0 一样 100% 真机验证）」对 Node 24.19.0 **仍然不成立**，
+且不能直接指望 JIT entitlement 解决。**唯一可行的运行形态是 `--jitless`
+零 JIT 档 + `fetch-shim.cjs`**（V8 完全不生成可执行代码；用 `node:http`
+原生 llhttp 顶替内置 undici 的 WASM 解析器）。这恰恰是稳定底座 +ios3 起
+就在用的兜底档 —— 只是首版 `+ios24` 把 +ios15 的运行时脚本原样带进来时，
+忘了去掉 Node 24 已删除的 flag。
+
+本仓库据此产出 `+ios24.1`：去掉所有生效行的 `--no-expose-wasm`，新增
+`node-safe` 让全部短命 node 调用统一零 JIT，`dsh-doctor` 改为 rc.3 / Node 24
+版本感知，并强制升级时换掉旧 daemon。Linux x64 的 Node 24.19.0 上已实跑
+`--jitless` 下的 `web` 监听、`smoke.js`、`pnpm --version`、`node:sqlite`、
+前端垫片 `--check` 与 `401 → 303 + Cookie → 200` 全链路（JS 层证据）。
+
+**边界不变**：零 JIT 档在 A11 真机上的最终表现仍需用户装包 / 跑
+`dist/fix-ios24.sh` 后回传截图确认；本仓库**不承诺 A11 100% 成功**。
+唯一 100% 真机验证过的组合仍是 `+ios15`（rc.5 + Node 22.12.0）。

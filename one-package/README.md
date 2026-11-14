@@ -4,12 +4,13 @@
 「最新 DSH + 像官方 App 一样点图标即用」的主交付。稳定底座
 （`build.sh` 产出的 `0.2.1-rc.5+ios15` / `0.2.2-rc.1+ios16`）一个字节都没动。
 
-## 两个档位：请优先用 `+ios24`
+## 三个档位：请装 `+ios24.1`
 
 | 档位 | 内置 Node | DSH | 状态 |
 | --- | --- | --- | --- |
-| `+ios18` | 22.12.0（真机验证过的稳定档） | 0.2.2-rc.3 | **不推荐**：见下方不兼容说明 |
-| `+ios24` | **v24.19.0**（GitHub Actions 成功构建的 iOS arm64 成品） | 0.2.2-rc.3 | **推荐**，两个包并列、互不覆盖 |
+| `+ios18` | 22.12.0 | 0.2.2-rc.3 | **坏包**：rc.3 要求 Node ≥24.9，CLI 起不来；仅作对照档 |
+| `+ios24` | v24.19.0 | 0.2.2-rc.3 | **已被取代**：首版，A11 上运行时脚本不兼容，见下方第二轮真机回归 |
+| `+ios24.1` | **v24.19.0** + 零 JIT 全链路 | 0.2.2-rc.3 | **推荐**，A11 第二轮真机回归修复版 |
 
 **为什么 `+ios18` 是坏的**：rc.3 的 `package.json` 声明 `engines.node >= 24.9.0`，
 且 `lib/bin.js` 用了 `import.meta.main`（Node 24.2+ 才支持）。22.12.0 上
@@ -39,14 +40,14 @@ SHA-256  8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
 
 ```sh
 NODE_IOS_BIN=/path/to/node-v24.19.0-iphoneos-arm64-jit \
-DSH_IOS_TAG=ios24 \
+DSH_IOS_TAG=ios24.1 \
   sh one-package/build-one-package.sh \
     bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz \
     app-bundle/payload \
-    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24.1_iphoneos-arm64.deb
 
-DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
-    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb \
+DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh \
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24.1_iphoneos-arm64.deb \
     bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload
 ```
 
@@ -55,12 +56,18 @@ DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
 `/var/jb/usr/lib/dsh-node24/` 与 `dsh24*`，用 `dsh24-switch` 切换，
 适合先验证 Node 24 能否在设备上跑，不影响主包。
 
-**诚实边界**：`+ios24` 的 Node 24.19.0 是「编译成功」，**不是「A11 真机验证
-成功」**。JIT entitlement、后台线程 W^X 行为在 iPhone X / iOS 16.7.15 上
-零验证；该二进制按 `--without-npm --without-inspector --with-intl=small-icu
+**诚实边界（2026-11-14 第二轮真机截图后更正）**：首版 `+ios24` 在 iPhone X /
+A11 / iOS 16.7.x 上**并没有跑起来**。此前「设置页显示 rc.3、证明 Node 24 在 A11
+上能用」的结论来自用户后来明确指出「给错了」的那张安装截图，不能作为证据。
+真机实测是：四档原生 JIT 全部 `SIGBUS(138)`，`dsh` 直接 `Bus error: 10`；
+Web Clip 只显示 401 黑页。也就是说 **Node 24.19.0 的 JIT / W^X 在 A11 上确实
+不可用**（即便 `dynamic-codesigning` 已签），必须全程走 `--jitless` 零 JIT 档。
+`+ios24.1` 已按这个事实重做，但**零 JIT 档在 A11 真机上的最终表现仍需用户
+装包 / 跑热修后再确认，本仓库不承诺 A11 100% 成功**。该二进制按
+`--without-npm --without-inspector --with-intl=small-icu
 --without-node-snapshot --without-node-code-cache --openssl-no-asm` 裁剪，
 启动会略慢、非英语 `Intl` 数据受限。稳定档 `+ios15`（rc.5 + Node 22.12.0）
-仍是唯一真机验证过的组合，未做任何改动。
+仍是唯一真机验证过的组合，逐字节未做改动。
 
 ## 为什么之前「依旧不是全屏」
 
@@ -78,8 +85,9 @@ daemon + 兜底打开」的辅助壳，不再被描述成全屏。
 
 ## 真机回归（+ios24 / iPhone X / iOS 16.7.15，2026-11-14）
 
-上一版 `+ios24` 装上去后 Web UI 能起（设置页显示 `0.2.2-rc.3`，证明
-Node 24.19.0 在 A11 上确实能用），但用户实测截图暴露 4 个问题：
+首版 `+ios24` 的构建链漏打全套兼容补丁，用户实测截图暴露 4 个问题（这些
+截图里能看到设置页，但那不是 `+ios24` 本包跑起来的证据 —— 用户后来明确
+指出安装截图给错了，见下一节）：
 
 | 症状 | 根因 | 修复 |
 | --- | --- | --- |
@@ -96,8 +104,36 @@ Node 24.19.0 在 A11 上确实能用），但用户实测截图暴露 4 个问�
 
 **版本分流**：`apply_compat_patches.py`（补 Node 22.12 缺失的
 `import.meta.main` / zstd，并把新会话压缩改成 none）只在内置 node 主版本
-`< 24` 时应用；`+ios24` 是 Node 24.19.0 原生支持，且裸引擎已实证能跑，
-故跳过，不改动已验证的组合。
+`< 24` 时应用；Node 24.19.0 原生支持这些 API，故跳过。但「跳过兼容补丁」
+**不等于运行时脚本不用改** —— 下一节的第二轮真机回归正是这一步漏掉的代价。
+
+## 真机回归第二轮（+ios24.1 / iPhone X / A11，2026-11-14）
+
+用户装的是 `+ios24`（不是之前给错的那张安装截图），三张真机截图分别是：
+全屏 Web Clip 黑底一行 `dsh web authentication required; reopen the URL
+printed by dsh web.`；终端 `dsh` → `Bus error: 10` +「所有 V8 启动档位都在
+WASM 冒烟探针里失败了」；`dsh-doctor` → 抬头写着 `+ios15`、`OK=17 FAIL=12`。
+
+| 症状 | 文件级根因 | `+ios24.1` 修复 |
+| --- | --- | --- |
+| `dsh` / daemon 起不来 | 单包 3b 把稳定底座 `payload/usr/bin/dsh`、`dsh-doctor`、`tier.sh` 原样复制进来。`tier.sh` 的 `nowasm` 档和 `usr/bin/pnpm`、`apply_pnpm_abs_patch.cjs` 注入的 `__dshPnpmFlags` 都带 `--no-expose-wasm` —— 这个 V8 flag 在 Node 24 / V8 13.x **已删除**，传了就是 `bad option` 退出 9。A11 上 `native/single/balanced/safe` 四档全 `SIGBUS(138)`，唯一能活的零 JIT 档被这一个废参数挡死 | `make_node24_runtime.py` 去掉所有生效行的废参数；新增 `node-safe`（`--jitless --require fetch-shim.cjs`）；`dsh`/`tier.sh` 全档失败兜底到 `nowasm`；共享 `payload/`、`shims/` 一个字节不动，稳定底座 SHA 不变 |
+| `dsh-doctor` 12 个 FAIL、抬头 `+ios15` | doctor 硬编码 Node 22.12.0 的 `101,297,040` 字节、DSH `0.2.1-rc.5`、`+ios15` 抬头；且 heal / patch 解析 / `--check` / `node:sqlite` / 各 `apply_*.cjs` 都**裸跑 node**（不带零 JIT），在 A11 上连锁 `SIGBUS`，多数 FAIL 是误报 | doctor 改为 rc.3 / Node 24 版本感知（大小只做 >20MB 完整性、版本号 `0.2.2-rc.3`、会话 zstd 按 Node 24 原生支持分流），所有短命调用改走 `NODE_SAFE`；`ctl ping` 也接上 `SAFE_NODE` |
+| 全屏图标打开只有 401 黑页 | postinst 只跑 `dsh-app-ctl enable`，其 `kickstart` 不带 `-k`，launchd 认为服务已在运行 → 升级后 3080 上仍是**旧 daemon**（内存里是随机 `launchToken` 的旧引擎树），固定 token 的 Web Clip 必然 401；旧 Web Clip（无 token / 旧 token / Untitled）还被 SpringBoard 缓存 | `dsh-extras-postinst.sh`：bootout `dev.airdevs.dsh` / `dev.airdevs.dsh-app`、清掉占 3080 的孤儿进程、删掉所有指向 `127.0.0.1:3080` 的旧 Web Clip、重写带 `Title`/`FullScreen`/固定 token 的新 Web Clip、bootstrap + `kickstart -k` 强制换进程、用固定 token 真探 `303/200` |
+
+**关键取舍**：共享 `shims/apply_pnpm_abs_patch.cjs` 会被 `make_fix_ios15.py`
+内嵌进 `fix-ios15.sh` 并打进稳定底座 deb，改一个字节就会改变已发布的
+`+ios15` SHA。所以单包另建 `apply_pnpm_abs_patch_node24.cjs`（MARK 仍为
+`dsh-ios +ios14`，设备端自愈会幂等跳过），构建与设备端热修都用这份副本。
+
+**已装首版 `+ios24` 的用户**不必等重装：把 `dist/fix-ios24.sh` 传到手机，
+`sh fix-ios24.sh` 会就地完成同样的修复（幂等、零写入 `$DSH_HOME`），
+跑完 `respring` 一次即可。重装 `+ios24.1` 是更彻底的做法。
+
+**仍未验证的部分**：零 JIT 档在 A11 / iOS 16.7.15 真机上的最终表现、
+SpringBoard 对 Web Clip 的缓存刷新时机，仍需用户实机确认；本仓库不承诺
+A11 100% 成功。Linux x64 的 Node 24.19.0 上已实跑 `--jitless + fetch-shim`
+下的 `web` 监听、`smoke.js`、`pnpm --version`、`node:sqlite`、前端垫片
+`--check` 与 `401 → 303 + Cookie → 200` 全链路，作为 JS 层证据。
 
 ## 修复方案
 
@@ -132,11 +168,15 @@ SHA-256 / mode / 属主指纹前后对比，实测通过。
 ## 目录
 
 - `DEBIAN/control`、`postinst`、`prerm`：单包元数据与安装/卸载脚本。
-- `dsh-extras-postinst.sh` / `dsh-extras-prerm.sh`：**全屏 Web Clip 安装 + uicache**、APP 签名、launchd 保活、卸载清理。
-- `webclip/`：`FullScreen=true` 的 `Info.plist` 与 `icon.png`。
+- `dsh-extras-postinst.sh` / `dsh-extras-prerm.sh`：**全屏 Web Clip 安装 + uicache**、APP 签名、launchd 保活、卸载清理；`+ios24.1` 起还负责强制换掉旧 daemon 与清理旧 Web Clip。
+- `webclip/`：`FullScreen=true` 的 `Info.plist` 与 `icon.png`；构建期额外写入 `token`（与 `dsh-web-token` 同源）。
 - `dsh-web-token`：固定 loopback token，唯一真相源。
+- `make_node24_runtime.py`：**仅对 stage 副本**打 Node 24 零 JIT 运行时补丁（去掉 `--no-expose-wasm`、部署 `node-safe`、doctor 版本感知），按内置 node 主版本自动触发；共享 `payload/`、`shims/` 不动。
+- `apply_pnpm_abs_patch_node24.cjs`：pnpm 绝对路径直连补丁的单包专用副本（`__dshPnpmFlags` 无废 flag），避免改共享 shim 影响稳定底座 SHA。
+- `apply_plugin_install_patch_rc3.cjs`：插件市场 / 手动安装补丁的单包专用副本（支持 rc.3 minified `client.js` 锚点）。
 - `build-one-package.sh`：组装 deb。
-- `verify-one-package.sh`：独立核验（含**静态 Web Clip URL 的 rc.3 鉴权黑盒**）。
+- `verify-one-package.sh`：独立核验（含**静态 Web Clip URL 的 rc.3 鉴权黑盒**、Node 24 运行时与升级路径断言，共 88 项）。
+- `../dist/fix-ios24.sh`：已装首版 `+ios24` 的**设备端就地热修**，不必重装 deb。
 - `patch-rc3-client-transform.sh`：历史遗留的可选替换脚本。现已被 `shims/apply_plugin_install_patch.cjs` 的「源码 / minify bundle 双锚点」通用注入取代（rc.3 的 `client.js` 是 webpack bundle，+ios15 补丁锚点命中 0 次），构建链不再调用它。
 
 ## 构建

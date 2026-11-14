@@ -113,9 +113,12 @@ FRONT="$NM/@deepseek-ai/dsh-web-frontend/dist"
 
 # [1/6] 是 Node 22.12 专用兼容补丁（补 import.meta.main / zstd /
 # stripTypeScriptTypes，并把新会话默认压缩 zstd 改成 none）。Node 24 原生
-# 支持这些 API，且 +ios24 已实证「裸引擎就能把 Web UI 跑起来」，此时打它
-# 只会无谓改动已验证的组合（还改新会话压缩格式）。因此按包内 node 的
-# 真实主版本分流：>=24 跳过，22.x 必打。
+# 支持这些 API，打它只会无谓改动已验证的组合（还改新会话压缩格式）。
+# 按包内 node 的真实主版本分流：>=24 跳过，22.x 必打。
+# 注意：「跳过兼容补丁」不等于「运行时脚本不用改」——+ios24 真机实测
+# Node 24 原生 JIT 在 A11 上四档全 SIGBUS(138)，唯一能活的 nowasm 档又被
+# tier.sh 里 Node 24 已删除的 --no-expose-wasm 挡成 rc=9。因此 >=24 时
+# 下面 3d-1 还会对 stage 副本打一套专用的零 JIT 运行时补丁。
 NVER=$(strings "$NB" 2>/dev/null | grep -m1 -oE '^v2[0-9]+\.[0-9]+\.[0-9]+$' || true)
 NMAJOR=$(printf '%s' "$NVER" | sed -E 's/^v([0-9]+)\..*/\1/')
 case "$NMAJOR" in ''|*[!0-9]*) NMAJOR=0 ;; esac
@@ -128,7 +131,16 @@ fi
 
 echo "==> [2/6] pnpm 绝对路径直连（修真机 dsh plugin 127 / SIGBUS）"
 PM="$NM/@deepseek-ai/dsh-plugin-manager/lib"
-node "$ROOT/shims/apply_pnpm_abs_patch.cjs" "$PM" || exit 1
+# +ios24：共享 shim 注入的 __dshPnpmFlags 含 Node 24 已删除的
+# --no-expose-wasm，会让插件安装子进程 `bad option` 退出 9。共享 shim
+# 被 make_fix_ios15.py 内嵌进 fix-ios15.sh（改它会动稳定底座 SHA），
+# 所以单包用专用副本；MARK 保持 +ios14，设备端自愈会幂等跳过。
+if [ "$NMAJOR" -ge 24 ]; then
+    PNPM_PATCH="$HERE/apply_pnpm_abs_patch_node24.cjs"
+else
+    PNPM_PATCH="$ROOT/shims/apply_pnpm_abs_patch.cjs"
+fi
+node "$PNPM_PATCH" "$PM" || exit 1
 node --check "$PM/index.js" || { echo "补丁后 index.js 语法错误" >&2; exit 1; }
 node --check "$PM/types/operations.js" || { echo "补丁后 operations.js 语法错误" >&2; exit 1; }
 
@@ -222,12 +234,16 @@ cp "$ROOT/ent.plist" "$STAGE/var/jb/usr/lib/dsh/ent.plist"
 
 # 3c 设备端运行时/热修脚本（dsh wrapper 与 doctor 会用到）
 for f in fetch-shim.cjs dsh-home-heal.cjs dsh-plugin-compat.cjs \
-         apply_pnpm_abs_patch.cjs \
          apply_frontend_inject.cjs apply_fixed_token_patch.cjs \
          safari16-polyfill.js dsh-ios-manual-install-transform.js; do
     [ -f "$ROOT/shims/$f" ] || { echo "缺少 shims/$f" >&2; exit 1; }
     cp "$ROOT/shims/$f" "$STAGE/var/jb/usr/lib/dsh/$f"
 done
+# apply_pnpm_abs_patch.cjs 同样按 node 主版本分流：+ios24 用无废 flag 的副本，
+# 名字保持不变，设备端 doctor 的自愈调用路径不用改。
+cp "$PNPM_PATCH" "$STAGE/var/jb/usr/lib/dsh/apply_pnpm_abs_patch.cjs"
+node --check "$STAGE/var/jb/usr/lib/dsh/apply_pnpm_abs_patch.cjs" || {
+    echo "构建中止：设备端 pnpm 补丁语法错误" >&2; exit 1; }
 # apply_plugin_install_patch.cjs 用单包专用副本：设备端 dsh-doctor 热修在
 # rc.3 树上重跑时也需要支持 minify bundle 锚点，否则会命中 0 次失败。
 # 文件名保持不变，doctor 的调用路径不用改。
@@ -238,6 +254,17 @@ node --check "$STAGE/var/jb/usr/lib/dsh/apply_plugin_install_patch.cjs" || {
 
 # 3d APP payload（Info.plist / entitlements / LaunchDaemon / dsh-app-* 脚本）
 cp -a "$APPDIR/." "$STAGE/"
+
+# 3d-1 Node 24 专用运行时改造（只改 stage 副本，源文件一律不动）
+# 触发条件：包内真实 node 主版本 >=24。Node 22 档不打补丁；+ios18 是
+# 已冻结的历史对照档（发布 SHA 927b5308…），当前源码面向 +ios24.1。
+# 改动见 make_node24_runtime.py 顶部说明。
+if [ "$NMAJOR" -ge 24 ]; then
+    echo "==> [3d-1] Node 24 运行时适配（零 JIT 全链路 + 版本感知 doctor）"
+    python3 "$HERE/make_node24_runtime.py" "$STAGE" || exit 1
+else
+    echo "==> [3d-1] Node 22 档：保留稳定底座原运行时（不打 Node24 补丁）"
+fi
 
 # 3d-2 单包只保留「一个全屏入口」。native DSH.app 用的是
 # SFSafariViewController，永远带 Safari 顶栏/底栏/关闭按钮（真机截图
@@ -267,6 +294,9 @@ python3 "$APPB/make_app_icon.py" "$STAGE/var/jb/Applications/DSH.app" | sed 's/^
 mkdir -p "$STAGE/var/jb/usr/lib/dsh/webclip"
 cp "$HERE/webclip/Info.plist" "$STAGE/var/jb/usr/lib/dsh/webclip/Info.plist"
 cp "$HERE/webclip/icon.png"   "$STAGE/var/jb/usr/lib/dsh/webclip/icon.png"
+# token 单一真相源也随包下发：extras-postinst 清理旧 Web Clip / 自检时读它，
+# 不再把 token 硬编码进安装脚本（避免与 Web Clip URL、plist、补丁漂移）。
+cp "$HERE/dsh-web-token" "$STAGE/var/jb/usr/lib/dsh/webclip/token"
 
 # 3g extras 必须进包 —— 旧版漏在这里，导致全屏入口从未安装
 cp "$HERE/dsh-extras-postinst.sh" "$STAGE/var/jb/usr/lib/dsh/dsh-extras-postinst.sh"
@@ -282,6 +312,31 @@ if [ "$TAG" != "ios18" ]; then
     sed "s/^Version: .*/Version: 0.2.2-rc.3+${TAG}/" \
         "$HERE/DEBIAN/control" > "$STAGE/DEBIAN/control"
     echo "    版本标签: +$TAG（并列实验档，不覆盖 +ios18）"
+fi
+# +ios24.1 的 changelog 只写在 stage 副本里：共享 control 原文件一个字节不动。
+# +ios18 是已冻结的对照档（927b5308…），当前源码面向 +ios24.1，不再承诺
+# 从当前 HEAD 重新构建 +ios18 能 1:1 复现当时的历史产物。
+if [ "$TAG" = "ios24.1" ]; then
+    python3 - "$STAGE/DEBIAN/control" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+block = """ 本版（+ios24.1）真机回归修复（iPhone X / A11 / iOS 16.7.x）：
+ * 去掉 Node 24 已删除的 --no-expose-wasm（tier.sh / pnpm / 插件子进程）；
+   A11 上四档原生 JIT 全 SIGBUS 时，唯一可用的零 JIT 档不再被 bad option(9) 挡死；
+ * 全部短命 node 调用统一走 node-safe（--jitless + fetch-shim），
+   dsh-doctor 改为 rc.3 / Node 24 版本感知，不再误报 +ios15 的 12 项 FAIL；
+ * 升级时强制 bootout + kickstart -k 换掉旧 daemon、清理旧 Web Clip，
+   修掉「dsh web authentication required」401 黑屏；装/卸零写入 $DSH_HOME。
+"""
+# Description 的续行必须以单个空格开头，且必须紧跟在该字段之后、
+# 其它字段（Homepage:）之前，否则 dpkg 会把续行算进 Homepage。
+i = s.index('\nHomepage:')
+# block 自带结尾换行，s[i:] 也以 \nHomepage: 开头；去掉 block 的尾换行，
+# 否则中间会多出一个空行，dpkg-deb 会报「several package info entries」。
+s = s[:i] + '\n' + block.rstrip('\n') + s[i:]
+open(p, 'w', encoding='utf-8').write(s)
+PY
 fi
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 
@@ -306,6 +361,7 @@ for f in \
   "$STAGE/var/jb/usr/lib/dsh/dsh-extras-prerm.sh" \
   "$STAGE/var/jb/usr/lib/dsh/webclip/Info.plist" \
   "$STAGE/var/jb/usr/lib/dsh/webclip/icon.png" \
+  "$STAGE/var/jb/usr/lib/dsh/webclip/token" \
   "$STAGE/var/jb/Applications/DSH.app/DSHLauncher" \
   "$STAGE/var/jb/Applications/DSH.app/Info.plist" \
   "$STAGE/var/jb/Applications/DSH.app/entitlements.plist" \
@@ -313,6 +369,24 @@ for f in \
   "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm" "$STAGE/DEBIAN/control"; do
     [ -e "$f" ] || { echo "构建中止：缺 $f" >&2; exit 1; }
 done
+if [ "$NMAJOR" -ge 24 ]; then
+    [ -x "$STAGE/var/jb/usr/lib/dsh/node-safe" ] || {
+        echo "构建中止：缺 node-safe（Node 24 零 JIT 启动器）" >&2; exit 1; }
+    grep -q 'nowasm|--jitless --require ' "$STAGE/var/jb/usr/lib/dsh/tier.sh" || {
+        echo "构建中止：tier.sh nowasm 档未去掉 --no-expose-wasm" >&2; exit 1; }
+    grep -q 'NODE_SAFE' "$STAGE/var/jb/usr/bin/dsh-doctor" || {
+        echo "构建中止：dsh-doctor 未接上 node-safe" >&2; exit 1; }
+    grep -q 'PFLAGS="--jitless"' "$STAGE/var/jb/usr/bin/pnpm" || {
+        echo "构建中止：pnpm 仍带已删除的 --no-expose-wasm" >&2; exit 1; }
+    for _f in "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-plugin-manager/lib/index.js" \
+              "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-plugin-manager/lib/types/operations.js" \
+              "$STAGE/var/jb/usr/lib/dsh/apply_pnpm_abs_patch.cjs"; do
+        if grep -v '^[[:space:]]*[/\*#]' "$_f" | grep -q -- '--no-expose-wasm'; then
+            echo "构建中止：$_f 生效行仍含 Node 24 已删除的 --no-expose-wasm" >&2; exit 1
+        fi
+    done
+    echo "    Node 24 运行时断言通过（nowasm 可用 / 短命调用与插件子进程全零 JIT）"
+fi
 for f in "$STAGE/var/jb/usr/bin/dsh" "$STAGE/var/jb/usr/bin/dsh-daemon" \
          "$STAGE/var/jb/usr/bin/dsh-app-ctl" "$STAGE/var/jb/usr/bin/dsh-app-ui" \
          "$STAGE/var/jb/usr/lib/dsh/dsh-extras-postinst.sh" \
@@ -347,6 +421,7 @@ chmod 755 "$STAGE/var/jb/Applications/DSH.app/DSHLauncher" \
           "$STAGE/var/jb/usr/bin/dsh-daemon" "$STAGE/var/jb/usr/bin/dsh-app-ctl" \
           "$STAGE/var/jb/usr/bin/dsh-app-ui" "$STAGE/var/jb/usr/bin/pnpm" \
           "$STAGE/var/jb/usr/bin/dsh-compat" \
+          "$STAGE/var/jb/usr/lib/dsh/node-safe" \
           "$STAGE/var/jb/usr/lib/dsh/dsh-extras-postinst.sh" \
           "$STAGE/var/jb/usr/lib/dsh/dsh-extras-prerm.sh" \
           "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"

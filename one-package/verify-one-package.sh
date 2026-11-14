@@ -134,24 +134,99 @@ PY
 R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+10)) || FAIL=$((FAIL+1))
 
 sec "3c) 全屏入口唯一性（Web Clip 有 Title，半屏 native APP 隐藏）"
-python3 - "$WCPLIST" "$APP/Info.plist" "$D/dsh-extras-postinst.sh" <<'PY'
+case "$VTAG" in ios24.*) NC=8 ;; *) NC=5 ;; esac
+python3 - "$WCPLIST" "$APP/Info.plist" "$D/dsh-extras-postinst.sh" "$VTAG" <<'PY'
 import plistlib, sys
 wc = plistlib.load(open(sys.argv[1], 'rb'))
 app = plistlib.load(open(sys.argv[2], 'rb'))
 ex = open(sys.argv[3], encoding='utf-8').read()
+tag = sys.argv[4]
 checks = [
  ('Web Clip 有 Title（桌面图标不再叫 Untitled）', bool(wc.get('Title'))),
  ('Web Clip Title 为 DeepSeek Harness', wc.get('Title') == 'DeepSeek Harness'),
  ('半屏 native APP 标记 SBAppTags=hidden', 'hidden' in (app.get('SBAppTags') or [])),
  ('extras 不再 register 半屏 APP 图标', 'register' not in ex or all(
      l.strip().startswith('#') for l in ex.splitlines() if 'register' in l)),
- ('extras 仍做 launchd 保活 enable', '"$CTL" enable' in ex),
 ]
+if tag.startswith('ios24.'):
+    # +ios24.1 起升级路径改为强制换进程；首版 +ios24 / +ios18 用 enable。
+    checks += [
+     ('extras 强制 bootout 旧 daemon（升级不再留随机 token 进程）', 'bootout' in ex),
+     ('extras 强制 kickstart -k 换上新引擎树', 'kickstart -k' in ex),
+     ('extras 清理旧 DSH Web Clip（防 SpringBoard 缓存旧 URL）', '*.webclip' in ex and 'rm -rf "$d"' in ex),
+     ('extras 用固定 token 真探 303/200', 'statusCode===303||r.statusCode===200' in ex),
+    ]
+else:
+    checks += [('extras 仍做 launchd 保活 enable', '"$CTL" enable' in ex)]
 for n, c in checks:
     print(('  [ OK ] ' if c else '  [FAIL] ') + n)
     if not c: sys.exit(1)
 PY
-R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+5)) || FAIL=$((FAIL+1))
+R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+NC)) || FAIL=$((FAIL+1))
+
+# ---------------------------------------------------------------- 3d) Node 24
+# 真机截图回归：+ios24 上 tier.sh / pnpm 的 --no-expose-wasm 在 Node 24 已被
+# 删除，nowasm 档 rc=9；doctor 硬编码 +ios15/Node22 大小造成 12 个误报 FAIL。
+# 只有 +ios24 档才打这套运行时补丁，+ios18 不做要求（保持原产物可复现）。
+case "$VTAG" in
+  ios24*)
+    sec "3d) Node 24 运行时补丁（零 JIT 全链路 + 版本感知 doctor）"
+    python3 - "$X" "$TOKEN" <<'PY'
+import os, sys, plistlib
+X, tok = sys.argv[1:3]
+D = os.path.join(X, 'var/jb/usr/lib/dsh')
+B = os.path.join(X, 'var/jb/usr/bin')
+NM = os.path.join(D, 'node_modules')
+checks = []
+def active(p, needle):
+    """needle 是否出现在非注释行里。"""
+    s = open(p, encoding='utf-8').read()
+    return any(needle in l and not l.lstrip().startswith('#') for l in s.splitlines())
+def has(p, needle):
+    return os.path.isfile(p) and needle in open(p, encoding='utf-8', errors='replace').read()
+ns = os.path.join(D, 'node-safe')
+checks += [
+ ('node-safe 存在且可执行', os.path.isfile(ns) and os.access(ns, os.X_OK)),
+ ('node-safe 走 --jitless + fetch-shim', has(ns, '--jitless') and has(ns, 'fetch-shim.cjs')),
+ ('tier.sh nowasm 去掉已删除的 --no-expose-wasm',
+  has(os.path.join(D, 'tier.sh'), 'nowasm|--jitless --require ') and
+  not active(os.path.join(D, 'tier.sh'), '--no-expose-wasm')),
+ ('tier.sh 全档失败兜底 nowasm', has(os.path.join(D, 'tier.sh'), 'TIER_SOURCE=fallback')),
+ ('pnpm PFLAGS 无 --no-expose-wasm',
+  has(os.path.join(B, 'pnpm'), 'PFLAGS="--jitless"') and
+  not active(os.path.join(B, 'pnpm'), '--no-expose-wasm')),
+ ('dsh wrapper 兜底零 JIT', has(os.path.join(B, 'dsh'), 'TIER_SOURCE=fallback')),
+ ('dsh wrapper heal 走 node-safe', has(os.path.join(B, 'dsh'), '"$D/node-safe" "$D/dsh-home-heal.cjs"')),
+ ('dsh-doctor 抬头为 +ios24 / rc.3', has(os.path.join(B, 'dsh-doctor'), '+ios24 (DSH 0.2.2-rc.3 / Node 24)')),
+ ('dsh-doctor 不再硬编码 Node22 大小', not active(os.path.join(B, 'dsh-doctor'), '101297000')),
+ ('dsh-doctor 版本号改为 rc.3', has(os.path.join(B, 'dsh-doctor'), 'if [ "$DV" = "0.2.2-rc.3" ]')),
+ ('dsh-doctor 短命检查统一 NODE_SAFE', has(os.path.join(B, 'dsh-doctor'), 'NODE_SAFE="$D/node-safe"')),
+ ('ctl 探活接上 SAFE_NODE', has(os.path.join(B, 'dsh-app-ctl'), 'SAFE_NODE="$JB/usr/lib/dsh/node-safe"')),
+ ('webclip/token 与单一真相源一致',
+  open(os.path.join(D, 'webclip/token'), encoding='utf-8').read().strip() == tok),
+ ('插件子进程 __dshPnpmFlags 无废 flag',
+  all('--no-expose-wasm' not in l
+      for p in (os.path.join(NM, '@deepseek-ai/dsh-plugin-manager/lib/index.js'),
+                os.path.join(NM, '@deepseek-ai/dsh-plugin-manager/lib/types/operations.js'))
+      for l in open(p, encoding='utf-8', errors='replace').read().splitlines()
+      if '__dshPnpmFlags' in l and not l.lstrip().startswith('*'))),
+ ('设备端 pnpm 热修副本同步去掉废 flag',
+  '--no-expose-wasm' not in [
+      l for l in open(os.path.join(D, 'apply_pnpm_abs_patch.cjs'), encoding='utf-8').read().splitlines()
+      if '__dshPnpmFlags =' in l][0]),
+]
+bad = 0
+for n, c in checks:
+    print(('  [ OK ] ' if c else '  [FAIL] ') + n)
+    if not c: bad += 1
+sys.exit(1 if bad else 0)
+PY
+    R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+15)) || FAIL=$((FAIL+1))
+    ;;
+  *)
+    echo "  [note] 非 +ios24 档，跳过 Node 24 运行时断言"
+    ;;
+esac
 
 sec "4) 鉴权黑盒：Web Clip 静态 URL 真能通过 rc.3 的 401 -> 303 -> cookie"
 # 在 deb 解出的同目录建一个 ESM 桥接副本（bare specifier 仍从同树 node_modules 解析）
@@ -233,6 +308,9 @@ if grep -v '^[[:space:]]*#' "$X/var/jb/usr/bin/dsh-daemon" \
     bad "daemon 仍有 401 待机死循环"
 else ok "daemon 已删待机死循环"; fi
 grep -q 'statusCode===303' "$X/var/jb/usr/bin/dsh-app-ctl" && ok "ctl ping 只认 303/200" || bad "ctl ping 仍把 401 判可连"
+if [ -f "$D/node-safe" ]; then
+    sh -n "$D/node-safe" >/dev/null 2>&1 && ok "sh -n node-safe" || bad "sh -n node-safe"
+fi
 grep -q 'WCSRC/Info.plist' "$D/dsh-extras-postinst.sh" && ok "extras 真的安装全屏 Web Clip" || bad "extras 缺 Web Clip 安装"
 # 自动链路不得写 $DSH_HOME
 if grep -vE '^[[:space:]]*#|^[[:space:]]*echo|^[[:space:]]*printf' \
