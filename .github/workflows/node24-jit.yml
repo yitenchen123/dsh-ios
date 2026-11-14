@@ -30,7 +30,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15 # arm64 (M1) host；macos-14 标签已下线（2026-11 实测不可用）
-    timeout-minutes: 300 # v24.22.3 标准 V8 首次全量编译实测 >110 分钟；GitHub 公共 repo job 上限 360
+    timeout-minutes: 360 # v24.22.3 标准 V8 首次全量编译实测 >110 分钟；GitHub 公共 repo job 上限 360
     env:
       NODE_REF: ${{ github.event.inputs.node_ref || 'v24.22.3' }}
       IOS_MIN: "15.0"
@@ -120,7 +120,7 @@ jobs:
           export CCACHE_DIR="$HOME/.ccache"
           ccache -z >/dev/null 2>&1 || true
           set +e
-          make -j2 2>&1 | tee build.log
+          make -j"$(sysctl -n hw.ncpu)" 2>&1 | tee build.log
           rc=${PIPESTATUS[0]}
           echo "make rc=$rc"
           set -e
