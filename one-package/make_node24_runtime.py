@@ -24,8 +24,9 @@
   * 新增 node-safe 启动器（--jitless + fetch-shim.cjs），所有短命 node 调用
     统一走它；dsh 主进程仍由 tier.sh 逐档探测（A14+ 可用原生 JIT，A11 自动
     落到 nowasm）；
-  * doctor 的版本/大小断言改成 Node 24 / rc.3 感知，会话压缩一项按 Node
-    主版本分流（Node 24 原生支持 zstd，不需要 +ios8 降级）；
+  * doctor 的版本/大小断言改成 Node 24 / rc.3 感知；会话压缩一项改为
+    严格断言 none（见下方 make_ios_data_compat.py：这是兼容用户既有明文
+    .jsonl 会话的数据格式问题，与 Node 版本无关，Node 24 也不能用 zstd 默认）；
   * dsh wrapper 与 doctor 在全部档位都失败时兜底到 nowasm，而不是直接放弃。
 
 每一次文本替换都带「锚点命中次数」断言，锚点漂移立即中止构建，
@@ -213,15 +214,17 @@ s = sub(s, """    if grep -q 'const DEFAULT_COMPRESSION = "none";' "$PJ"; then
         bad "会话默认压缩仍是 zstd，重启会丢对话 / corrupt Zstandard" \\
             "跑 sh fix-session.sh；它会改这一行并迁移已有 gzip 会话"
     fi""",
-"""    if grep -q 'const DEFAULT_COMPRESSION = "none";' "$PJ"; then
-        ok "会话默认压缩 none（重启后历史对话可恢复）"
-    elif [ "${MAJ:-0}" -ge 24 ] 2>/dev/null; then
-        # +ios8 把 zstd 改成 none 是因为 Node 22.12 缺 zstd；Node 24 原生
-        # 支持 zstd，rc.3 保持 zstd 默认不会丢对话，这里不能误报 FAIL。
-        ok "会话默认压缩 zstd（Node 24 原生 zstd，+ios8 降级不需要）"
+"""    # 严格断言 none：会话压缩是「兼容用户明文 .jsonl 会话」的数据格式问题，
+    # 与 Node 主版本无关。Node 24 原生 zstd 也不能用 zstd 默认 —— 它会撞上
+    # 用户从 +ios15/+ios18 带来的 .jsonl，触发 checkRootEncoding 全局 fatal，
+    # 工作区/对话/目录选择器全部 unavailable（+ios24.1 真机截图实证）。
+    # 所有 iOS 档（含 +ios15/+ios18/+ios24.x）默认都必须是 none；漏打数据
+    # 兼容补丁的包在这里必须 FAIL，作为回归防线。
+    if grep -q 'const DEFAULT_COMPRESSION = "none";' "$PJ"; then
+        ok "会话默认压缩 none（兼容既有明文 .jsonl 会话，工作区/对话可加载）"
     else
-        bad "会话默认压缩仍是 zstd，重启会丢对话 / corrupt Zstandard" \\
-            "跑 sh fix-session.sh；它会改这一行并迁移已有 gzip 会话"
+        bad "会话默认压缩仍是 zstd，会撞上既有 .jsonl 会话导致工作区/对话全空" \\
+            "跑 sh fix-ios24.sh 或重装 +ios24.2；make_ios_data_compat.py 会改成 none"
     fi""", label="doctor 会话压缩")
 s = sub(s, 'echo "结论：全部关键项通过。终端输入 dsh 即可启动 web 工作台。"',
         'echo "结论：全部关键项通过。点桌面「DeepSeek Harness」全屏图标即用；终端输入 dsh 亦可。"',

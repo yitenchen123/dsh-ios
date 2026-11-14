@@ -22,6 +22,12 @@
 #      SpringBoard 缓存。
 #
 # 本脚本做的事（全部幂等，可重复跑）：
+#   0) 【+ios24.2 新增】修「工作区/对话加载不出」：把会话默认压缩 zstd
+#      改回 none（兼容用户从 +ios15/+ios18 带来的明文 .jsonl 会话），并让
+#      iOS/darwin 的目录选择器走 browse（Web Clip 无原生选择器）。
+#      这两处不修，host 装配期 checkRootEncoding() 会因 zstd 撞 .jsonl
+#      全局 fatal，所有 controller pending，前端报 directoryPickerController
+#      is unavailable、工作区/对话全空。
 #   1) 去掉所有生效行里的 --no-expose-wasm；
 #   2) 部署 /var/jb/usr/lib/dsh/node-safe（--jitless + fetch-shim.cjs）；
 #   3) 在 /var/jb/etc/dsh/dsh.env 注入 NODE_OPTIONS 零 JIT 参数，并让
@@ -34,7 +40,7 @@
 #         不删任何用户数据。只动 /var/jb 下的系统文件与 DSH 自己的 Web Clip。
 # 用法：  在手机终端（root 或 sudo）执行  sh fix-ios24.sh
 #         跑完若桌面图标仍是旧的，respring 一次（SpringBoard 缓存 Web Clip）。
-#         更彻底的做法是重装 v0.2.2-rc.3+ios24.1 新 deb（含同样修复）。
+#         更彻底的做法是重装 v0.2.2-rc.3+ios24.2 新 deb（含同样修复）。
 # ============================================================================
 set -e
 JB=/var/jb
@@ -56,6 +62,37 @@ LOGDIR="$JB/var/log/dsh-app"
 TOKEN=$(sed -n 's/.*?token=\([^<]*\)<.*/\1/p' "$WCSRC/Info.plist" 2>/dev/null | head -1)
 [ -n "$TOKEN" ] || TOKEN=dshios-fixed-token-8f3a2c
 echo "fix-ios24: 固定 token = $TOKEN"
+
+# --- 0) 数据兼容：会话压缩 none + 目录选择器 browse -------------------------
+# 与构建期 make_ios_data_compat.py 逐字一致（sed 版，设备端无 python3）。
+NM="$D/node_modules"
+SP="$NM/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
+DP="$NM/@deepseek-ai/dsh-host-directory-picker-auto/lib/index.js"
+# iOS 自带的是 BSD sed，对替换串里的 \n / \t 不做转义；这里只做「同长度
+# 单行值替换」，不插入注释行（JS 的 // 注释必须独占到行尾，塞进同一行会
+# 把后面的语句一起注释掉）。幂等判定基于替换后的值，不依赖 marker 文本。
+if [ -f "$SP" ]; then
+    if grep -q 'const DEFAULT_COMPRESSION = "zstd";' "$SP" 2>/dev/null; then
+        sed 's@const DEFAULT_COMPRESSION = "zstd";@const DEFAULT_COMPRESSION = "none";@' \
+            "$SP" > "$SP.dshfix.$$" 2>/dev/null || true
+        [ -s "$SP.dshfix.$$" ] && cat "$SP.dshfix.$$" > "$SP" 2>/dev/null || true
+        rm -f "$SP.dshfix.$$" 2>/dev/null || true
+        echo "    会话默认压缩已改 none（明文 .jsonl，兼容既有对话）"
+    else
+        echo "    会话默认压缩已是 none（跳过）"
+    fi
+fi
+if [ -f "$DP" ]; then
+    if grep -q 'facts.platform === "darwin" || facts.platform === "win32") return "native";' "$DP" 2>/dev/null; then
+        sed 's@if (facts.platform === "darwin" || facts.platform === "win32") return "native";@if (facts.platform === "darwin" || facts.platform === "win32") return "browse";@' \
+            "$DP" > "$DP.dshfix.$$" 2>/dev/null || true
+        [ -s "$DP.dshfix.$$" ] && cat "$DP.dshfix.$$" > "$DP" 2>/dev/null || true
+        rm -f "$DP.dshfix.$$" 2>/dev/null || true
+        echo "    iOS 目录选择器已改 browse（Web Clip 可用）"
+    else
+        echo "    iOS 目录选择器已是 browse（跳过）"
+    fi
+fi
 
 # --- 1) 去掉 Node 24 已删除的 --no-expose-wasm -------------------------------
 strip_flag() {
@@ -195,7 +232,7 @@ if [ "$READY" -eq 1 ]; then
     echo "  现在点桌面「DeepSeek Harness」图标即可全屏使用；插件/工作区/对话照旧加载。"
 else
     echo "! fix-ios24: Web UI 仍未就绪。看日志 $LOGDIR/dsh-daemon.err.log，"
-    echo "  或跑 dsh-doctor；也可直接重装 v0.2.2-rc.3+ios24.1 新 deb。" >&2
+    echo "  或跑 dsh-doctor；也可直接重装 v0.2.2-rc.3+ios24.2 新 deb。" >&2
 fi
 echo "  若桌面仍是旧图标或仍显示 401，请 respring 一次（SpringBoard 缓存 Web Clip）。"
 echo "  本脚本没有改动 \$DSH_HOME 里的对话 / 工作区 / 插件 / 配置。"

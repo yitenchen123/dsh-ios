@@ -1,17 +1,23 @@
 # dsh-ios 交付物 SHA-256
-# 生成时间: 2026-11-11 UTC（2026-11-14 更新全屏单包与 APP 包；同日第二轮真机回归）
+# 生成时间: 2026-11-11 UTC（2026-11-14 更新全屏单包与 APP 包；同日三轮真机回归）
 # 稳定底座: dsh 0.2.1-rc.5 / Node 22.12.0 / +ios15（真机验证，交付物字节未变）
 # 新增 +ios16: dsh 0.2.2-rc.1 可选升级包 / 桌面 APP + 保活 + 手机操控工具链
 # 最新 rc.3 全屏单包: DSH 0.2.2-rc.3 + 真全屏 Web Clip + 固定 loopback token
 #   + 零写入 $DSH_HOME（详见 one-package/README.md）
 # 重要：rc.3 的 engines.node >= 24.9.0 且 bin.js 用 import.meta.main，
-#   +ios18 档内置的 Node 22.12.0 不满足，CLI 起不来；请用 +ios24.1 档
+#   +ios18 档内置的 Node 22.12.0 不满足，CLI 起不来；请用 +ios24.2 档
 #   （内置 GitHub Actions 成功构建的 Node v24.19.0 iOS arm64）。
 # 2026-11-14 第二轮真机回归：首版 +ios24 在 iPhone X / A11 上四档原生 JIT
 #   全 SIGBUS(138)，且 tier.sh / pnpm / 插件子进程的 --no-expose-wasm 在
 #   Node 24 已被删除（bad option, rc=9），令唯一可用的零 JIT 档也起不来；
 #   升级脚本又不强制换掉旧 daemon，导致固定 token 的 Web Clip 收到 401。
 #   +ios24.1 修掉以上全部，并附就地热修 fix-ios24.sh（不必重装 deb）。
+# 2026-11-14 第三轮真机回归：+ios24.1 装好后「工作区/对话加载不出」，目录
+#   选择器报 directoryPickerController is unavailable。根因是 rc.3 的会话
+#   默认压缩 zstd 撞上用户从 +ios15/+ios18 带来的明文 .jsonl（checkRootEncoding
+#   全局 fatal -> 所有 controller pending），且 iOS(darwin) 目录选择器选了
+#   无原生选择器的 native 后端。+ios24.2 把会话压缩改回 none、目录选择器
+#   改 browse（make_ios_data_compat.py），doctor 严格断言 none。详见下方。
 # 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
 #       DSH_VER=0.2.2-rc.1 sh bootstrap.sh && DSH_VER=0.2.2-rc.1 sh build.sh
 #       sh app-bundle/build-app.sh && sh app-bundle/verify-app.sh
@@ -22,7 +28,7 @@
 # 独立核验: sh verify-deb.sh [deb路径]          两个 deb 各 57 项
 #           sh verify-022.sh <tree> <node22.12>  0.2.2 树 31 项（含真 boot）
 #           sh app-bundle/verify-app.sh           APP 包 77 项
-#           DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 88 项
+#           DSH_IOS_TAG=ios24.2 sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 97 项
 #           sh app-bundle/verify-no-data-touch.sh  装/卸零写入实测
 #           sh phone-bridge/verify-phone-bridge.sh 工具链 28 项
 #           sh verify-phone-control.sh           旧接入方案 25 项
@@ -56,7 +62,7 @@ f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.ds
 #   在 A11 上被 Node 24 已删除的 --no-expose-wasm 挡死零 JIT 档（见下方）。
 5fdb35be7ddface317ea75ba4e521c0be5a8f16d3e09b7412c817641cf079f37  dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
 
-# --- rc.3 + Node v24.19.0（推荐 · A11 第二轮真机回归修复）---
+# --- rc.3 + Node v24.19.0（A11 第二轮真机回归修复，已被 +ios24.2 取代）---
 # 2026-11-14 真机三症状与文件级根因：
 #   ① dsh Bus error: 10 /「所有 V8 启动档位都在 WASM 冒烟探针里失败了」
 #      -> tier.sh、usr/bin/pnpm、插件子进程 __dshPnpmFlags 里的
@@ -76,7 +82,37 @@ f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.ds
 #         bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload <out.deb>
 # 核验：DSH_IOS_TAG=ios24.1 sh one-package/verify-one-package.sh <deb> <bundle> app-bundle/payload
 f25f1acdeb672977022003fa3029a2a011210a30934828a623c407e2252dd4f3  dev.airdevs.dsh_0.2.2-rc.3+ios24.1_iphoneos-arm64.deb
-b6fee3c62af350ffbdb463f80b6dca87961505a537b53622111bd552523f1b99  fix-ios24.sh
+
+# --- rc.3 + Node v24.19.0（推荐 · A11 第三轮真机回归：工作区/对话加载修复）---
+# 2026-11-14 真机三张截图：安装与 dsh-doctor 全过（OK=28 WARN=1 FAIL=0、
+#   Node 24 零 JIT 档 nowasm 可用），但全屏 Web UI 里工作区/对话全空，
+#   点「选择工作区目录」报 typert gateway: directoryPicker/list: active
+#   Service "directoryPickerController" is unavailable；doctor 里夹着
+#   session-xxx.jsonl uses .jsonl but configured for compression "zstd"。
+# 文件级根因（A/B 实跑复现，见 one-package/make_ios_data_compat.py）：
+#   ① 会话压缩 zstd 撞明文 .jsonl：+ios24 因「Node 24 原生支持 zstd」整包
+#      跳过 apply_compat_patches.py，DEFAULT_COMPRESSION 留在 "zstd"。但那条
+#      zstd→none 的本质是「兼容用户从 +ios15/+ios18 升级带来的明文 .jsonl
+#      会话数据」，与 Node 版本无关。checkRootEncoding() 在 create/open/list
+#      的入口全局执行，发现 opposite 编码即抛 encodingMismatch -> host 装配
+#      fatal（真机 doctor [WARN] headless boot rc=1、安装 [warn] Web UI 尚未
+#      就绪）-> workspace / session / directoryPicker 等所有 controller
+#      pending -> 前端工作区/对话全空、目录选择器 service unavailable。
+#   ② iOS(process.platform==="darwin") 让 directory-picker-auto 选 native
+#      后端（osascript/NSOpenPanel，iOS 没有），而 Web Clip 是浏览器、前端
+#      目录选择器用 browse UI 调 directoryPicker/list，需要 browse capability。
+# 修复：make_ios_data_compat.py 只改单包 stage 依赖树副本 —— DEFAULT_COMPRESSION
+#   改回 "none"、iOS/darwin 目录选择器强制 "browse"（纯 node:fs/promises）。
+#   共享 payload/ 与 shims/ 一个字节不动；doctor 第 16 项改为严格断言 none。
+# 端到端实证：未修包跑 web（含 .jsonl）日志为「4 entries did not activate」
+#   + workspace/session/directoryPicker controller 全部 pending；修后同一
+#   场景日志只有一行启动地址、零挂起，401->303 鉴权、host 全装配通过。
+# 稳定底座 +ios15（67d54667…）与 +ios18（927b5308…）逐字节未变。
+# 构建：NODE_IOS_BIN=<node> DSH_IOS_TAG=ios24.2 sh one-package/build-one-package.sh \
+#         bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload <out.deb>
+# 核验：DSH_IOS_TAG=ios24.2 sh one-package/verify-one-package.sh <deb> <bundle> app-bundle/payload
+1b44deff6b336f914b8d87923132f07c975632558a1e865fa499f91fb04de417  dev.airdevs.dsh_0.2.2-rc.3+ios24.2_iphoneos-arm64.deb
+e3416f563d1f4f8957054eaf5a2db4001bfe59df36b7be302c58dabd5b03b2a7  fix-ios24.sh
 
 # --- 可选生态插件（手动安装，不预装）---
 f9f74e0f485148acfe544b88e35c17da196b6ff4c6da4f7a6576a7c566cd068a  dsh-ios-phone-control-0.1.0.tgz

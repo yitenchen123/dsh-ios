@@ -201,6 +201,31 @@ v24.19.0，`Mach-O arm64` + JIT entitlements 已签）后回传的截图显示�
 `--jitless` 下的 `web` 监听、`smoke.js`、`pnpm --version`、`node:sqlite`、
 前端垫片 `--check` 与 `401 → 303 + Cookie → 200` 全链路（JS 层证据）。
 
-**边界不变**：零 JIT 档在 A11 真机上的最终表现仍需用户装包 / 跑
-`dist/fix-ios24.sh` 后回传截图确认；本仓库**不承诺 A11 100% 成功**。
-唯一 100% 真机验证过的组合仍是 `+ios15`（rc.5 + Node 22.12.0）。
+## 第三轮真机回归（2026-11-14）：工作区/对话加载不出是数据层问题，与 JIT 无关
+
+`+ios24.1` 装好后 doctor 全过（`OK=28 WARN=1 FAIL=0`），零 JIT 档可用，
+但全屏 UI 里工作区/对话全空、目录选择器报 `directoryPickerController is
+unavailable`。真机 doctor 里夹着 `session-xxx.jsonl uses .jsonl but configured
+for compression "zstd"`。A/B 实跑（Linux Node 24，含明文 `.jsonl` 的
+DSH_HOME）定位两个数据层根因，均与 Node 版本 / 鉴权 / JIT 无关：
+
+1. **会话压缩格式不匹配（主因）**：`+ios24` 因「Node 24 原生支持 zstd」整包
+   跳过 `apply_compat_patches.py`，`DEFAULT_COMPRESSION` 留在 `zstd`；但那条
+   `zstd→none` 本质是兼容用户从 +ios15/+ios18 带来的明文 `.jsonl` 会话数据，
+   不是补 Node 22 缺的 API。`checkRootEncoding()` 全局闸门一抛错，host 装配
+   fatal，workspace/session/directoryPicker 全部 controller `pending`。
+   修法：`DEFAULT_COMPRESSION` 改回 `none`（所有 iOS 档一致），doctor 严格断言。
+2. **iOS 目录选择器选错后端**：`process.platform==="darwin"` 让
+   `directory-picker-auto` 选 native（`osascript`，iOS 无），而 Web Clip 前端
+   需要 browse。修法：iOS/darwin 强制 `browse`（纯 `node:fs/promises`）。
+
+`+ios24.2` 由 `make_ios_data_compat.py` 只改单包 stage 依赖树副本完成修复，
+共享 `shims/` / `payload/` 不动，稳定底座 SHA 未变；`dist/fix-ios24.sh`
+step 0 提供设备端就地热修。单包 97 项 0 失败、两次构建字节一致、
+APP 包 77/0、doctor 27 OK/0 FAIL；未修包 web 日志 `4 entries did not
+activate` + 一堆 pending，修后同一场景零挂起。
+
+**边界不变**：零 JIT 档在 A11 真机上的最终表现、SpringBoard 对 Web Clip
+缓存刷新时机仍需用户装包 / 跑 `dist/fix-ios24.sh` 后回传截图确认；本仓库
+**不承诺 A11 100% 成功**。唯一 100% 真机验证过的组合仍是 `+ios15`
+（rc.5 + Node 22.12.0）。

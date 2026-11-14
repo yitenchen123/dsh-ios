@@ -133,6 +133,43 @@ sys.exit(1 if bad else 0)
 PY
 R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+10)) || FAIL=$((FAIL+1))
 
+sec "3b-2) iOS 数据兼容（工作区/对话加载不出的根因回归）"
+# +ios24.1 真机截图：会话默认 zstd 撞上用户从 +ios15/+ios18 带来的明文
+# .jsonl，host 装配期 checkRootEncoding() 全局 fatal -> 所有 controller
+# pending -> 前端「directoryPickerController is unavailable」、工作区/对话全空。
+# 同时 iOS(darwin) 目录选择器必须走 browse（Web Clip 无原生选择器）。
+SP="$NM/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
+DP="$NM/@deepseek-ai/dsh-host-directory-picker-auto/lib/index.js"
+BR="$NM/@deepseek-ai/dsh-host-directory-picker-browse/lib/index.js"
+python3 - "$SP" "$DP" "$BR" <<'PY'
+import sys, os
+sp, dp, br = sys.argv[1:4]
+def txt(p): return open(p, encoding='utf-8', errors='replace').read() if os.path.isfile(p) else ''
+s, d = txt(sp), txt(dp)
+checks = [
+ ('会话默认压缩为 none（兼容用户明文 .jsonl 会话）',
+  'const DEFAULT_COMPRESSION = "none";' in s),
+ ('会话默认压缩不再残留 zstd（不再触发 encodingMismatch 全局 fatal）',
+  'const DEFAULT_COMPRESSION = "zstd";' not in s),
+ ('compression 仍可选 zstd（读 .jsonl.zstd 能力保留）',
+  'z.const("zstd")' in s),
+ ('iOS/darwin 目录选择器返回 browse（Web Clip 浏览器可用）',
+  'facts.platform === "darwin" || facts.platform === "win32") return "browse";' in d),
+ ('iOS/darwin 目录选择器不再返回 native（无 osascript/NSOpenPanel）',
+  'facts.platform === "darwin" || facts.platform === "win32") return "native";' not in d),
+ ('browse 后端为纯 JS（node:fs/promises，零原生依赖）',
+  os.path.isfile(br) and 'node:fs/promises' in txt(br)),
+ ('两处补丁带幂等 marker（设备端热修可复用）',
+  'dsh-iOS compat' in s and 'dsh-iOS compat' in d),
+]
+for n, c in checks:
+    print(('  [ OK ] ' if c else '  [FAIL] ') + n)
+    if not c: sys.exit(1)
+PY
+R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+7)) || FAIL=$((FAIL+1))
+node --check "$SP" >/dev/null 2>&1 && ok "session-persistence-jsonl 语法" || bad "session-persistence-jsonl 语法"
+node --check "$DP" >/dev/null 2>&1 && ok "directory-picker-auto 语法" || bad "directory-picker-auto 语法"
+
 sec "3c) 全屏入口唯一性（Web Clip 有 Title，半屏 native APP 隐藏）"
 case "$VTAG" in ios24.*) NC=8 ;; *) NC=5 ;; esac
 python3 - "$WCPLIST" "$APP/Info.plist" "$D/dsh-extras-postinst.sh" "$VTAG" <<'PY'

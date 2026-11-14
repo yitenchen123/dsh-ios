@@ -113,8 +113,13 @@ FRONT="$NM/@deepseek-ai/dsh-web-frontend/dist"
 
 # [1/6] 是 Node 22.12 专用兼容补丁（补 import.meta.main / zstd /
 # stripTypeScriptTypes，并把新会话默认压缩 zstd 改成 none）。Node 24 原生
-# 支持这些 API，打它只会无谓改动已验证的组合（还改新会话压缩格式）。
-# 按包内 node 的真实主版本分流：>=24 跳过，22.x 必打。
+# 支持这些 API，>=24 跳过整包，避免无谓改动已验证的组合。
+# 注意：那 4 条里「DEFAULT_COMPRESSION zstd→none」并非 Node API 兼容，
+# 而是「兼容用户从 +ios15/+ios18 升级带来的明文 .jsonl 会话数据」——
+# 与 Node 主版本无关，>=24 档必须在下面 [7/6] 单独补回，否则 host 装配
+# 期 checkRootEncoding() 会因 zstd 撞上 .jsonl 全局 fatal，工作区/对话/
+# 目录选择器全部 unavailable（+ios24.1 真机截图实证）。
+# 按包内 node 的真实主版本分流：>=24 跳过本整包补丁，22.x 必打。
 # 注意：「跳过兼容补丁」不等于「运行时脚本不用改」——+ios24 真机实测
 # Node 24 原生 JIT 在 A11 上四档全 SIGBUS(138)，唯一能活的 nowasm 档又被
 # tier.sh 里 Node 24 已删除的 --no-expose-wasm 挡成 rc=9。因此 >=24 时
@@ -217,6 +222,25 @@ done
 grep -q 'safari16-polyfill.js' "$FRONT/index.html" || { echo "构建中止：index.html 未注入垫片" >&2; exit 1; }
 echo "    补丁链校验通过：垫片注入 / 插件市场 / git 预检 / pnpm / 转化钩子 / 固定 token"
 
+echo "==> [7/6] iOS 数据兼容：会话默认明文 .jsonl + 目录选择器强制 browse"
+# 修 +ios24.x 真机「工作区/对话加载不出」。两处都是依赖树的数据/平台适配，
+# 与 Node 版本、鉴权、零 JIT 无关；只改 ENGINE 的临时展开副本，随后整体
+# 拷进 stage，共享 shims/ 与 payload/ 一个字节不动（+ios15 SHA 不变）。
+# 对 Node22 档（+ios18）本脚本幂等跳过：apply_compat_patches.py 已把
+# DEFAULT_COMPRESSION 改成 none。详见 make_ios_data_compat.py 顶部说明。
+python3 "$HERE/make_ios_data_compat.py" "$NM" || exit 1
+SP="$NM/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js"
+DP="$NM/@deepseek-ai/dsh-host-directory-picker-auto/lib/index.js"
+grep -q 'const DEFAULT_COMPRESSION = "none";' "$SP" || {
+    echo "构建中止：会话默认压缩仍为 zstd（会撞上用户明文 .jsonl 会话）" >&2; exit 1; }
+! grep -q 'const DEFAULT_COMPRESSION = "zstd";' "$SP" || {
+    echo "构建中止：会话默认压缩仍残留 zstd" >&2; exit 1; }
+grep -q 'facts.platform === "darwin" || facts.platform === "win32") return "browse";' "$DP" || {
+    echo "构建中止：iOS/darwin 目录选择器仍走 native（Web Clip 用不了）" >&2; exit 1; }
+node --check "$SP" || { echo "构建中止：session-persistence-jsonl 语法错误" >&2; exit 1; }
+node --check "$DP" || { echo "构建中止：directory-picker-auto 语法错误" >&2; exit 1; }
+echo "    会话默认压缩=none（兼容明文 .jsonl）、iOS 目录选择器=browse（纯 JS）"
+
 # ---------------------------------------------------------------- 3) 组装 stage
 echo "==> 组装 stage"
 mkdir -p "$STAGE/DEBIAN" "$STAGE/var/jb/usr/lib/dsh" "$STAGE/var/jb/usr/bin" \
@@ -257,7 +281,7 @@ cp -a "$APPDIR/." "$STAGE/"
 
 # 3d-1 Node 24 专用运行时改造（只改 stage 副本，源文件一律不动）
 # 触发条件：包内真实 node 主版本 >=24。Node 22 档不打补丁；+ios18 是
-# 已冻结的历史对照档（发布 SHA 927b5308…），当前源码面向 +ios24.1。
+# 已冻结的历史对照档（发布 SHA 927b5308…），当前源码面向 +ios24.2。
 # 改动见 make_node24_runtime.py 顶部说明。
 if [ "$NMAJOR" -ge 24 ]; then
     echo "==> [3d-1] Node 24 运行时适配（零 JIT 全链路 + 版本感知 doctor）"
@@ -313,22 +337,31 @@ if [ "$TAG" != "ios18" ]; then
         "$HERE/DEBIAN/control" > "$STAGE/DEBIAN/control"
     echo "    版本标签: +$TAG（并列实验档，不覆盖 +ios18）"
 fi
-# +ios24.1 的 changelog 只写在 stage 副本里：共享 control 原文件一个字节不动。
-# +ios18 是已冻结的对照档（927b5308…），当前源码面向 +ios24.1，不再承诺
+# +ios24.x 的 changelog 只写在 stage 副本里：共享 control 原文件一个字节不动。
+# +ios18 是已冻结的对照档（927b5308…），当前源码面向 +ios24.2，不再承诺
 # 从当前 HEAD 重新构建 +ios18 能 1:1 复现当时的历史产物。
-if [ "$TAG" = "ios24.1" ]; then
-    python3 - "$STAGE/DEBIAN/control" <<'PY'
+case "$TAG" in ios24.1|ios24.2) ;; *) skip_changelog=1 ;; esac
+if [ "${skip_changelog:-0}" != "1" ]; then
+    python3 - "$STAGE/DEBIAN/control" "$TAG" <<'PY'
 import sys
-p = sys.argv[1]
+p, tag = sys.argv[1:3]
 s = open(p, encoding='utf-8').read()
-block = """ 本版（+ios24.1）真机回归修复（iPhone X / A11 / iOS 16.7.x）：
+extra = ""
+if tag == "ios24.2":
+    extra = """ * 修「工作区/对话加载不出」：会话默认压缩 zstd 改回 none，兼容用户从
+   +ios15/+ios18 升级带来的明文 .jsonl 会话（不再触发 checkRootEncoding
+   全局 fatal，workspace/session/directoryPicker 控制器全部正常装配）；
+ * iOS(darwin) 目录选择器强制走 browse 后端（Web Clip 无原生选择器），
+   「选择工作区目录」可列目录/新建文件夹；装/卸零写入 $DSH_HOME。
+"""
+block = """ 本版（+%s）真机回归修复（iPhone X / A11 / iOS 16.7.x）：
  * 去掉 Node 24 已删除的 --no-expose-wasm（tier.sh / pnpm / 插件子进程）；
    A11 上四档原生 JIT 全 SIGBUS 时，唯一可用的零 JIT 档不再被 bad option(9) 挡死；
  * 全部短命 node 调用统一走 node-safe（--jitless + fetch-shim），
    dsh-doctor 改为 rc.3 / Node 24 版本感知，不再误报 +ios15 的 12 项 FAIL；
  * 升级时强制 bootout + kickstart -k 换掉旧 daemon、清理旧 Web Clip，
-   修掉「dsh web authentication required」401 黑屏；装/卸零写入 $DSH_HOME。
-"""
+   修掉「dsh web authentication required」401 黑屏；
+%s""" % (tag, extra)
 # Description 的续行必须以单个空格开头，且必须紧跟在该字段之后、
 # 其它字段（Homepage:）之前，否则 dpkg 会把续行算进 Homepage。
 i = s.index('\nHomepage:')
