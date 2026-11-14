@@ -98,8 +98,76 @@ NMAGIC=$(od -An -tx1 -N4 "$NB" 2>/dev/null | tr -d ' \n')
 echo "    内置 node OK（arm64 Mach-O, $(wc -c < "$NB" | tr -d '[:space:]') 字节）"
 
 # ---------------------------------------------------------------- 2) iOS 补丁
-echo "==> 应用固定 loopback token 补丁（rc.3 静态 URL 鉴权）"
-node "$ROOT/shims/apply_fixed_token_patch.cjs" "$ENGINE/node_modules" || exit 1
+# 单包必须打与稳定底座 build.sh 完全相同的全套兼容补丁。历史缺陷：
+# 本脚本只把 shims/*.cjs 复制进包（3c），却一个都没执行，于是 rc.3 的
+# 引擎树是「裸」的 —— 真机上表现为：
+#   * 插件市场索引 fetch(url,{redirect:"error"}) 遇到 CDN 跳转直接失败，
+#     且 parseIndexInWorker() 起子 Worker 在 A11 上 SIGBUS -> 全部 fetch failed；
+#   * dsh plugin 子进程找不到 pnpm / 裸 execa("git") 预检 -> 安装失败；
+#   * 前端 index.html 没注入 safari16-polyfill.js，iOS 16.7(Safari 16.6)
+#     缺 AbortSignal.any -> 工作区目录弹窗直接抛 "is not a function"。
+# 补丁全部幂等，且带「锚点未精确命中即中止」断言，绝不打出未验证的包。
+NM="$ENGINE/node_modules"
+FRONT="$NM/@deepseek-ai/dsh-web-frontend/dist"
+[ -f "$FRONT/index.html" ] || { echo "引擎树缺前端 dist/index.html: $FRONT" >&2; exit 1; }
+
+# [1/6] 是 Node 22.12 专用兼容补丁（补 import.meta.main / zstd /
+# stripTypeScriptTypes，并把新会话默认压缩 zstd 改成 none）。Node 24 原生
+# 支持这些 API，且 +ios24 已实证「裸引擎就能把 Web UI 跑起来」，此时打它
+# 只会无谓改动已验证的组合（还改新会话压缩格式）。因此按包内 node 的
+# 真实主版本分流：>=24 跳过，22.x 必打。
+NVER=$(strings "$NB" 2>/dev/null | grep -m1 -oE '^v2[0-9]+\.[0-9]+\.[0-9]+$' || true)
+NMAJOR=$(printf '%s' "$NVER" | sed -E 's/^v([0-9]+)\..*/\1/')
+case "$NMAJOR" in ''|*[!0-9]*) NMAJOR=0 ;; esac
+if [ "$NMAJOR" -ge 24 ]; then
+    echo "==> [1/6] 跳过 Node 22 兼容补丁（内置 node ${NVER:-v24.x} 原生支持，保持已验证组合）"
+else
+    echo "==> [1/6] 应用 Node 22 兼容补丁（内置 node ${NVER:-v22.12.0}）"
+    python3 "$ROOT/shims/apply_compat_patches.py" "$NM" || exit 1
+fi
+
+echo "==> [2/6] pnpm 绝对路径直连（修真机 dsh plugin 127 / SIGBUS）"
+PM="$NM/@deepseek-ai/dsh-plugin-manager/lib"
+node "$ROOT/shims/apply_pnpm_abs_patch.cjs" "$PM" || exit 1
+node --check "$PM/index.js" || { echo "补丁后 index.js 语法错误" >&2; exit 1; }
+node --check "$PM/types/operations.js" || { echo "补丁后 operations.js 语法错误" >&2; exit 1; }
+
+echo "==> [3/6] 插件安装 / 插件市场全链路（git 预检短路 + 主线程解析 + redirect follow + 手动转化钩子）"
+# 必须用单包专用副本：共享 shims/apply_plugin_install_patch.cjs 会被
+# make_fix_ios15.py 内嵌进 fix-ios15.sh、进而打进稳定底座 deb。为 rc.3
+# 改它会连锁改变稳定底座 SHA（违反「稳定包逐字节不动」）。这份副本额外
+# 支持 rc.3 client.js 的 minify bundle 锚点，A/B 段与共享 shim 完全一致。
+node "$HERE/apply_plugin_install_patch_rc3.cjs" "$NM" || exit 1
+for f in "@deepseek-ai/dsh-plugin-manager/lib/index.js" \
+         "@deepseek-ai/dsh-plugin-market/lib/index.js" \
+         "@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs" \
+         "@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js"; do
+    node --check "$NM/$f" || { echo "补丁后 $f 语法错误" >&2; exit 1; }
+done
+
+echo "==> [4/6] 注入 Safari 16.7 前端垫片 + 手动安装转化逻辑"
+node "$ROOT/shims/apply_frontend_inject.cjs" \
+    "$FRONT" \
+    "$ROOT/shims/safari16-polyfill.js" \
+    "$ROOT/shims/dsh-ios-manual-install-transform.js" || exit 1
+for m in 'safari16-polyfill.js' 'dsh-ios-manual-install-transform.js'; do
+    grep -q "$m" "$FRONT/index.html" || { echo "构建中止：index.html 缺 $m 引用" >&2; exit 1; }
+    [ -f "$FRONT/assets/$m" ] || { echo "构建中止：缺 assets/$m" >&2; exit 1; }
+    node --check "$FRONT/assets/$m" || { echo "构建中止：assets/$m 语法错误" >&2; exit 1; }
+done
+
+echo "==> [5/6] 内置纯 JS pnpm（让「安装插件前需配置 pnpm 环境」不再出现）"
+PNPMSRC="$ROOT/bundles/pnpm"
+if [ ! -f "$PNPMSRC/bin/pnpm.cjs" ] || [ ! -f "$PNPMSRC/dist/pnpm.cjs" ]; then
+    echo "缺少内置 pnpm: $PNPMSRC（插件安装必须有它）" >&2; exit 1
+fi
+mkdir -p "$ENGINE/libexec"
+cp -a "$PNPMSRC" "$ENGINE/libexec/pnpm"
+[ "$(find "$ENGINE/libexec/pnpm" -name '*.node' | wc -l)" -eq 0 ] || {
+    echo "构建中止：内置 pnpm 含原生 .node（iOS 无法加载）" >&2; exit 1; }
+
+echo "==> [6/6] 应用固定 loopback token 补丁（rc.3 静态 URL 鉴权）"
+node "$ROOT/shims/apply_fixed_token_patch.cjs" "$NM" || exit 1
 python3 - "$ENGINE/node_modules" "$TOKEN" <<'PY'
 import os, sys
 root, tok = sys.argv[1:3]
@@ -119,15 +187,23 @@ for f in $(find "$ENGINE/node_modules" -path '*dsh-client-connection/lib/index.j
     node --check "$f" || { echo "补丁后 $f 语法错误" >&2; exit 1; }
 done
 
-# rc.3 前端「生态插件转化」钩子：上游 client.js 锚点与 +ios15 补丁不一致，
-# 用已验证的成品替换。提供了 DSH_RC3_CLIENT 才执行；没提供则明确标注跳过，
-# 不影响 Web UI / 插件 / 工作区 / 对话的加载主链。
-if [ -n "${DSH_RC3_CLIENT:-}" ] && [ -f "$DSH_RC3_CLIENT" ]; then
-    echo "==> 应用 rc.3 前端 manual-install transform"
-    sh "$HERE/patch-rc3-client-transform.sh" "$DSH_RC3_CLIENT" "$ENGINE/node_modules" || exit 1
-else
-    echo "    [note] 未指定 DSH_RC3_CLIENT，跳过前端转化钩子（主加载链不受影响）"
-fi
+# rc.3 前端「生态插件转化」钩子已由 [3/6] 的 apply_plugin_install_patch.cjs
+# 通过「源码 / minify bundle 双锚点」通用注入，不再依赖外部成品替换。
+# 构建期强校验：四处补丁真正落到引擎树，绝不打出「脚本在包里但没执行」的裸树。
+for spec in \
+  "@deepseek-ai/dsh-web-frontend/dist/assets/safari16-polyfill.js|AbortSignal.any" \
+  "@deepseek-ai/dsh-web-frontend/dist/assets/dsh-ios-manual-install-transform.js|__dshIosTransformSpec" \
+  "@deepseek-ai/dsh-plugin-manager/lib/index.js|git-probe-shortcircuit" \
+  "@deepseek-ai/dsh-plugin-market/lib/index.js|redirect: \"follow\"" \
+  "@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js|__dshIosTransformSpec"; do
+    rel=${spec%%|*}; needle=${spec#*|}
+    [ -f "$NM/$rel" ] || { echo "构建中止：补丁产物缺失 $rel" >&2; exit 1; }
+    grep -qF "$needle" "$NM/$rel" || { echo "构建中止：$rel 缺 $needle（补丁未生效）" >&2; exit 1; }
+done
+[ -f "$NM/@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs" ] || {
+    echo "构建中止：worker-parse.cjs 未派生" >&2; exit 1; }
+grep -q 'safari16-polyfill.js' "$FRONT/index.html" || { echo "构建中止：index.html 未注入垫片" >&2; exit 1; }
+echo "    补丁链校验通过：垫片注入 / 插件市场 / git 预检 / pnpm / 转化钩子 / 固定 token"
 
 # ---------------------------------------------------------------- 3) 组装 stage
 echo "==> 组装 stage"
@@ -146,15 +222,40 @@ cp "$ROOT/ent.plist" "$STAGE/var/jb/usr/lib/dsh/ent.plist"
 
 # 3c 设备端运行时/热修脚本（dsh wrapper 与 doctor 会用到）
 for f in fetch-shim.cjs dsh-home-heal.cjs dsh-plugin-compat.cjs \
-         apply_pnpm_abs_patch.cjs apply_plugin_install_patch.cjs \
+         apply_pnpm_abs_patch.cjs \
          apply_frontend_inject.cjs apply_fixed_token_patch.cjs \
          safari16-polyfill.js dsh-ios-manual-install-transform.js; do
     [ -f "$ROOT/shims/$f" ] || { echo "缺少 shims/$f" >&2; exit 1; }
     cp "$ROOT/shims/$f" "$STAGE/var/jb/usr/lib/dsh/$f"
 done
+# apply_plugin_install_patch.cjs 用单包专用副本：设备端 dsh-doctor 热修在
+# rc.3 树上重跑时也需要支持 minify bundle 锚点，否则会命中 0 次失败。
+# 文件名保持不变，doctor 的调用路径不用改。
+cp "$HERE/apply_plugin_install_patch_rc3.cjs" \
+   "$STAGE/var/jb/usr/lib/dsh/apply_plugin_install_patch.cjs"
+node --check "$STAGE/var/jb/usr/lib/dsh/apply_plugin_install_patch.cjs" || {
+    echo "构建中止：单包专用插件补丁语法错误" >&2; exit 1; }
 
 # 3d APP payload（Info.plist / entitlements / LaunchDaemon / dsh-app-* 脚本）
 cp -a "$APPDIR/." "$STAGE/"
+
+# 3d-2 单包只保留「一个全屏入口」。native DSH.app 用的是
+# SFSafariViewController，永远带 Safari 顶栏/底栏/关闭按钮（真机截图
+# "127.0.0.1 / 关闭 / 大小"），与用户要求的「和官方 App 一样全屏」冲突。
+# 真全屏的是 FullScreen=true 的 Web Clip（3f）。这里给 native APP 注入
+# SBAppTags=hidden 让 SpringBoard 不再显示它，并改个不混淆的名字；APP 文件
+# 本身保留（终端 dsh-app-ctl ensure / 兜底仍可用），但不再是点开的入口。
+# 只改 stage 内的副本，app-bundle 独立包的源 Info.plist 一个字节不动。
+python3 - "$STAGE/var/jb/Applications/DSH.app/Info.plist" <<'PY'
+import plistlib, sys
+p = sys.argv[1]
+d = plistlib.load(open(p, 'rb'))
+d['SBAppTags'] = ['hidden']
+d['CFBundleDisplayName'] = 'DSH (Safari fallback)'
+with open(p, 'wb') as f:
+    plistlib.dump(d, f, sort_keys=False)
+print('    native APP 已标记隐藏，桌面主入口 = 全屏 Web Clip')
+PY
 
 # 3e prebuilt 可执行 + setuid helper + 图标
 APPB="$ROOT/app-bundle"
@@ -194,8 +295,13 @@ for f in \
   "$STAGE/var/jb/usr/bin/dsh-app-ui" \
   "$STAGE/var/jb/usr/bin/dsh-app-helper" \
   "$STAGE/var/jb/usr/lib/dsh/bin/node" \
+  "$STAGE/var/jb/usr/lib/dsh/libexec/pnpm/bin/pnpm.cjs" \
+  "$STAGE/var/jb/usr/lib/dsh/libexec/pnpm/dist/pnpm.cjs" \
   "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js" \
   "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-client-connection/lib/index.js" \
+  "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/assets/safari16-polyfill.js" \
+  "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-web-frontend/dist/assets/dsh-ios-manual-install-transform.js" \
+  "$STAGE/var/jb/usr/lib/dsh/node_modules/@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs" \
   "$STAGE/var/jb/usr/lib/dsh/dsh-extras-postinst.sh" \
   "$STAGE/var/jb/usr/lib/dsh/dsh-extras-prerm.sh" \
   "$STAGE/var/jb/usr/lib/dsh/webclip/Info.plist" \

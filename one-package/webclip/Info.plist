@@ -2,6 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- SpringBoard 读 Web Clip 的显示名用 Title，不是 CFBundleDisplayName。
+	     缺 Title 时桌面图标显示 "Untitled"（+ios24 真机实测）。 -->
+	<key>Title</key>
+	<string>DeepSeek Harness</string>
+	<key>PayloadDisplayName</key>
+	<string>DeepSeek Harness</string>
+	<key>IsRemovable</key>
+	<true/>
 	<key>CFBundleDisplayName</key>
 	<string>DeepSeek Harness</string>
 	<key>CFBundleIdentifier</key>

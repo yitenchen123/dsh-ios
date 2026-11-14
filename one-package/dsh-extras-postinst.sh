@@ -58,13 +58,21 @@ else
     echo "dsh: [ERROR] 缺 $WCSRC/Info.plist，全屏 Web Clip 未安装；此 deb 构建不完整！" >&2
 fi
 
-# launchd 保活 + 图标注册（native APP + Web Clip 一起刷新）。
-[ -x "$CTL" ] && "$CTL" enable   >/dev/null 2>&1 || true
-[ -x "$CTL" ] && "$CTL" register >/dev/null 2>&1 || true
+# launchd 保活（RunAtLoad + KeepAlive）：daemon 常驻，不需要点任何 APP 图标
+# 来拉起服务，点全屏 Web Clip 即可直接使用。
+[ -x "$CTL" ] && "$CTL" enable >/dev/null 2>&1 || true
+
+# 只刷新 SpringBoard 让它读取新建的 Web Clip 图标。绝不调用
+# `dsh-app-ctl register` —— 那会 uicache -p 把半屏 SFSafariViewController
+# 的 native DSH.app 图标显式刷到桌面，用户就会点错进带 Safari 栏的界面
+# （+ios24 真机截图：127.0.0.1 顶栏 + 关闭按钮 + 底部工具栏）。
+# 单包内该 APP 的 Info.plist 已带 SBAppTags=hidden（构建期注入），
+# 升级后 respring 一次可清掉旧版残留的半屏图标。
 for U in "$JB/usr/bin/uicache" "$JB/bin/uicache" /usr/bin/uicache; do
     if [ -x "$U" ]; then "$U" -a >/dev/null 2>&1 || true; break; fi
 done
 
-echo "DeepSeek Harness 单包：APP + DSH 0.2.2-rc.3 + 全屏入口 已就绪。"
-echo "  工作区 / 会话 / 插件全部保留，本包没有写入 \$DSH_HOME。"
+echo "DeepSeek Harness 单包：DSH 0.2.2-rc.3 + 全屏 Web Clip 入口 已就绪。"
+echo "  桌面点「DeepSeek Harness」图标即全屏使用；工作区 / 会话 / 插件全部保留。"
+echo "  若仍看到旧版半屏 DSH 图标，respring 一次即可（本包已将其标记隐藏）。"
 exit 0

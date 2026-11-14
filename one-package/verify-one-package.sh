@@ -102,6 +102,57 @@ for n, c in checks:
 PY
 R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+10)) || FAIL=$((FAIL+1))
 
+sec "3b) 兼容补丁链真落到引擎树（+ios24 真机四症状的根因回归）"
+# 历史缺陷：脚本只把 shims 复制进包却一个都没执行，rc.3 树是「裸」的，
+# 真机表现为插件市场全 fetch failed / pnpm 环境缺失 / AbortSignal.any 报错。
+FRONT="$NM/@deepseek-ai/dsh-web-frontend/dist"
+python3 - "$D" "$NM" "$FRONT" "$X" <<'PY'
+import os, sys
+D, NM, FRONT, X = sys.argv[1:5]
+checks = [
+ (os.path.join(FRONT, 'assets/safari16-polyfill.js'), 'AbortSignal.any', 'iOS16 前端垫片'),
+ (os.path.join(FRONT, 'assets/dsh-ios-manual-install-transform.js'), '__dshIosTransformSpec', '手动安装转化'),
+ (os.path.join(NM, '@deepseek-ai/dsh-plugin-manager/lib/index.js'), 'git-probe-shortcircuit', 'git 预检短路'),
+ (os.path.join(NM, '@deepseek-ai/dsh-plugin-market/lib/index.js'), 'redirect: "follow"', '插件市场 redirect follow'),
+ (os.path.join(NM, '@deepseek-ai/dsh-client-ui-plugin-manager/lib/client.js'), '__dshIosTransformSpec', '前端转化钩子'),
+ (os.path.join(NM, '@deepseek-ai/dsh-plugin-market/lib/worker-parse.cjs'), 'parseIndexBody', '主线程索引解析'),
+ (os.path.join(D, 'libexec/pnpm/bin/pnpm.cjs'), 'pnpm', '内置纯 JS pnpm 入口'),
+ (os.path.join(D, 'libexec/pnpm/dist/pnpm.cjs'), 'pnpm', '内置 pnpm 主 bundle'),
+ (os.path.join(FRONT, 'index.html'), 'safari16-polyfill.js', 'index.html 注入垫片引用'),
+]
+bad = 0
+for p, needle, label in checks:
+    hit = os.path.isfile(p) and needle in open(p, encoding='utf-8', errors='replace').read()
+    print(('  [ OK ] ' if hit else '  [FAIL] ') + label)
+    if not hit: bad += 1
+nd = sum(1 for dp, dn, fn in os.walk(os.path.join(D, 'libexec/pnpm'))
+         for f in fn if f.endswith('.node'))
+print(('  [ OK ] ' if nd == 0 else '  [FAIL] ') + '内置 pnpm 0 个原生 .node')
+if nd: bad += 1
+sys.exit(1 if bad else 0)
+PY
+R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+10)) || FAIL=$((FAIL+1))
+
+sec "3c) 全屏入口唯一性（Web Clip 有 Title，半屏 native APP 隐藏）"
+python3 - "$WCPLIST" "$APP/Info.plist" "$D/dsh-extras-postinst.sh" <<'PY'
+import plistlib, sys
+wc = plistlib.load(open(sys.argv[1], 'rb'))
+app = plistlib.load(open(sys.argv[2], 'rb'))
+ex = open(sys.argv[3], encoding='utf-8').read()
+checks = [
+ ('Web Clip 有 Title（桌面图标不再叫 Untitled）', bool(wc.get('Title'))),
+ ('Web Clip Title 为 DeepSeek Harness', wc.get('Title') == 'DeepSeek Harness'),
+ ('半屏 native APP 标记 SBAppTags=hidden', 'hidden' in (app.get('SBAppTags') or [])),
+ ('extras 不再 register 半屏 APP 图标', 'register' not in ex or all(
+     l.strip().startswith('#') for l in ex.splitlines() if 'register' in l)),
+ ('extras 仍做 launchd 保活 enable', '"$CTL" enable' in ex),
+]
+for n, c in checks:
+    print(('  [ OK ] ' if c else '  [FAIL] ') + n)
+    if not c: sys.exit(1)
+PY
+R=$?; [ "$R" -eq 0 ] && PASS=$((PASS+5)) || FAIL=$((FAIL+1))
+
 sec "4) 鉴权黑盒：Web Clip 静态 URL 真能通过 rc.3 的 401 -> 303 -> cookie"
 # 在 deb 解出的同目录建一个 ESM 桥接副本（bare specifier 仍从同树 node_modules 解析）
 LIBDIR=$(dirname "$CONN")

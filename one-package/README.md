@@ -76,6 +76,29 @@ DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
 桌面图标、启动画面，和普通 App 一样。native `DSH.app` 降级为「确保 launchd
 daemon + 兜底打开」的辅助壳，不再被描述成全屏。
 
+## 真机回归（+ios24 / iPhone X / iOS 16.7.15，2026-11-14）
+
+上一版 `+ios24` 装上去后 Web UI 能起（设置页显示 `0.2.2-rc.3`，证明
+Node 24.19.0 在 A11 上确实能用），但用户实测截图暴露 4 个问题：
+
+| 症状 | 根因 | 修复 |
+| --- | --- | --- |
+| 插件市场 / 插件目录**全部 `fetch failed`**（6 次重试，腾讯 / npmmirror / awesome-dsh 全挂） | `build-one-package.sh` 只把 `shims/*.cjs` **复制进包却一个都没执行**，rc.3 引擎树是裸的：`fetchIndex()` 用 `redirect:"error"` 遇 CDN 跳转即失败，`parseIndexInWorker()` 起子 Worker 在 A11 上 SIGBUS | 构建期执行 `apply_plugin_install_patch.cjs`（改 `redirect:"follow"` + 主线程解析 + 派生 `worker-parse.cjs`） |
+| 「选择工作区目录」弹窗报 **`AbortSignal.any is not a function`** | iOS 16.7 = Safari 16.6，缺 `AbortSignal.any` / `Promise.withResolvers` 等 Safari 17.4+ API；`index.html` 没注入 `safari16-polyfill.js` | 构建期执行 `apply_frontend_inject.cjs`，在 `<head>`、module 之前注入垫片与转化逻辑 |
+| 「**安装插件前需要先配置 pnpm 环境**」 | 单包没打 `libexec/pnpm`（19MB 纯 JS 发行版），也没执行 `apply_pnpm_abs_patch.cjs` | 构建期复制 `bundles/pnpm` → `libexec/pnpm`，并执行 pnpm 绝对路径直连补丁 |
+| 桌面**两个图标**、一个叫 **Untitled**；点开是带 Safari 顶栏/底栏的半屏界面 | Web Clip 的 `Info.plist` 写了 `CFBundleDisplayName`，但 SpringBoard 读的是 `Title` 键；且 `extras` 会 `register` 把半屏 `SFSafariViewController` 的 native APP 图标刷到桌面 | Web Clip 补 `Title`/`PayloadDisplayName`；单包内给 native APP 注入 `SBAppTags=hidden` 并去掉 `register`，桌面只留一个全屏入口（app-bundle 独立包不受影响） |
+
+**教训**：「shims 在 deb 里」≠「补丁已应用」。`build.sh`（稳定底座）
+一直执行全套兼容补丁，单包构建却只复制脚本。现在 `build-one-package.sh`
+执行与稳定底座相同的 6 组补丁，并加了构建期强断言 + `verify-one-package.sh`
+的 3b 段回归检查（逐文件校验垫片 / 插件市场 / pnpm / 转化钩子真的落到引擎树），
+从根上杜绝「假绿」。
+
+**版本分流**：`apply_compat_patches.py`（补 Node 22.12 缺失的
+`import.meta.main` / zstd，并把新会话压缩改成 none）只在内置 node 主版本
+`< 24` 时应用；`+ios24` 是 Node 24.19.0 原生支持，且裸引擎已实证能跑，
+故跳过，不改动已验证的组合。
+
 ## 修复方案
 
 **固定 loopback token（单一真相源 `one-package/dsh-web-token`）**
@@ -114,7 +137,7 @@ SHA-256 / mode / 属主指纹前后对比，实测通过。
 - `dsh-web-token`：固定 loopback token，唯一真相源。
 - `build-one-package.sh`：组装 deb。
 - `verify-one-package.sh`：独立核验（含**静态 Web Clip URL 的 rc.3 鉴权黑盒**）。
-- `patch-rc3-client-transform.sh`：可选，替换 rc.3 上游 `client.js` 以恢复 Web UI 手动安装对话框的「生态插件转化」钩子。
+- `patch-rc3-client-transform.sh`：历史遗留的可选替换脚本。现已被 `shims/apply_plugin_install_patch.cjs` 的「源码 / minify bundle 双锚点」通用注入取代（rc.3 的 `client.js` 是 webpack bundle，+ios15 补丁锚点命中 0 次），构建链不再调用它。
 
 ## 构建
 

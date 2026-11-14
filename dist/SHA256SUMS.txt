@@ -17,7 +17,7 @@
 # 独立核验: sh verify-deb.sh [deb路径]          两个 deb 各 57 项
 #           sh verify-022.sh <tree> <node22.12>  0.2.2 树 31 项（含真 boot）
 #           sh app-bundle/verify-app.sh           APP 包 77 项
-#           sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 55 项
+#           sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 70 项
 #           sh app-bundle/verify-no-data-touch.sh  装/卸零写入实测
 #           sh phone-bridge/verify-phone-bridge.sh 工具链 28 项
 #           sh verify-phone-control.sh           旧接入方案 25 项
@@ -35,16 +35,24 @@ f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.ds
 
 # --- 最新 rc.3：全屏单包 + 独立 APP 包（远端 main 全屏/加载链/零写入修复）---
 # 注：两包均为 SOURCE_DATE_EPOCH=1700000000 可复现构建；稳定底座 +ios15 未变。
+# 2026-11-14：APP 小包 SHA 由 8dd6e402… 更新为 44a3e3e4…，原因是它复制的
+#   one-package/webclip/Info.plist 补了 Title（修桌面「Untitled」图标），内容变化属实，
+#   两次构建仍逐字节一致；非回归。
 927b5308dbf5800ddd455b354774dc64de9fd1eb45c7c9d3f4acc442ae7406f7  dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
-8dd6e40272add95b28433fbcbb1d428aca1793fddb9e22a47fed2d2966ae83f9  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+44a3e3e4a7d56e7d9e550ffd78f84f9c485a4d8fd8e8219212cc28640cfd8978  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.2-rc.3+ios18_iphoneos-arm64.deb
 
 # --- rc.3 + Node v24.19.0（推荐）：与 +ios18 并列，不覆盖任何已发布包 ---
 # node 来源：GitHub Actions run 43532556241（success, main）产物
 #   artifact 14095226518 / Release node24-exp
 #   node-v24.19.0-iphoneos-arm64-jit  SHA 8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
+# 2026-11-14 真机回归修复：本包补齐了稳定底座 build.sh 一直在打、但单包
+#   构建链漏打的全套兼容补丁（Safari16 垫片 / 插件市场 redirect+主线程解析 /
+#   git 预检短路 / pnpm 绝对路径 / 手动安装转化钩子）+ 内置 libexec/pnpm，
+#   并给 Web Clip 补 Title、隐藏半屏 native APP。修真机四症状：
+#   插件市场全 fetch failed / AbortSignal.any / pnpm 环境 / 两个图标半屏。
 # 构建：NODE_IOS_BIN=<node> DSH_IOS_TAG=ios24 sh one-package/build-one-package.sh \
 #         bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload <out.deb>
-9a2ecce38dbe11ab9dcdef3014aeb1465056fae9be2061611904b48179787b5c  dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
+5fdb35be7ddface317ea75ba4e521c0be5a8f16d3e09b7412c817641cf079f37  dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
 
 # --- 可选生态插件（手动安装，不预装）---
 f9f74e0f485148acfe544b88e35c17da196b6ff4c6da4f7a6576a7c566cd068a  dsh-ios-phone-control-0.1.0.tgz
