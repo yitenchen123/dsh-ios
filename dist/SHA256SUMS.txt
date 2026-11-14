@@ -4,6 +4,9 @@
 # 新增 +ios16: dsh 0.2.2-rc.1 可选升级包 / 桌面 APP + 保活 + 手机操控工具链
 # 最新 rc.3 全屏单包: DSH 0.2.2-rc.3 + 真全屏 Web Clip + 固定 loopback token
 #   + 零写入 $DSH_HOME（详见 one-package/README.md）
+# 重要：rc.3 的 engines.node >= 24.9.0 且 bin.js 用 import.meta.main，
+#   +ios18 档内置的 Node 22.12.0 不满足，CLI 起不来；请用 +ios24 档
+#   （内置 GitHub Actions 成功构建的 Node v24.19.0 iOS arm64）。
 # 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
 #       DSH_VER=0.2.2-rc.1 sh bootstrap.sh && DSH_VER=0.2.2-rc.1 sh build.sh
 #       sh app-bundle/build-app.sh && sh app-bundle/verify-app.sh
@@ -34,6 +37,14 @@ f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.ds
 # 注：两包均为 SOURCE_DATE_EPOCH=1700000000 可复现构建；稳定底座 +ios15 未变。
 927b5308dbf5800ddd455b354774dc64de9fd1eb45c7c9d3f4acc442ae7406f7  dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
 8dd6e40272add95b28433fbcbb1d428aca1793fddb9e22a47fed2d2966ae83f9  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+
+# --- rc.3 + Node v24.19.0（推荐）：与 +ios18 并列，不覆盖任何已发布包 ---
+# node 来源：GitHub Actions run 43532556241（success, main）产物
+#   artifact 14095226518 / Release node24-exp
+#   node-v24.19.0-iphoneos-arm64-jit  SHA 8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
+# 构建：NODE_IOS_BIN=<node> DSH_IOS_TAG=ios24 sh one-package/build-one-package.sh \
+#         bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload <out.deb>
+9a2ecce38dbe11ab9dcdef3014aeb1465056fae9be2061611904b48179787b5c  dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
 
 # --- 可选生态插件（手动安装，不预装）---
 f9f74e0f485148acfe544b88e35c17da196b6ff4c6da4f7a6576a7c566cd068a  dsh-ios-phone-control-0.1.0.tgz

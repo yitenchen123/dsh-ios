@@ -5,7 +5,9 @@
 > 目标机：iPhone X (iPhone10,3), A11 **arm64**, iOS **16.7.15**, Dopamine 3.0 rootless (`/var/jb`)。
 > **稳定底座 `+ios15`**（默认、真机验证过）：修好「点击插件 → 安装插件」里所有手动方式、修好「插件市场加载失败一堆报错」、给生态插件加仅手动安装生效的转化逻辑、并让 GitHub 仓库可 1:1 字节级复现构建。dsh **0.2.1-rc.5** + 内置 node **22.12.0**，交付 deb 与热修的 SHA 保持不变。此前 14 轮修复全部保留并回归。
 > **本次新增 `+ios16` 交付**（见下一章）：① `0.2.2-rc.1` 最新版 DSH 可选升级包；② `dev.airdevs.dsh-app` —— UTM 式「把 .app 做成 deb」的桌面 APP + launchd 保活；③ 内置的手机操控工具链，启动 DSH 即可直接调用 `mcp__ios__*` 工具。
-> 关于 Node 24.9：公开可得的 **iOS arm64 Node 可执行文件仍不存在**（详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)），但实证发现官方 `0.2.2-rc.1` 的四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，因此用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 31 项核验（含真 boot、会话创建与恢复）的完整升级包。
+> 关于 Node 24.9：**（rc.1 时代的历史结论）** 当时公开可得的 iOS arm64 Node 可执行文件确实不存在（详见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)），但实证发现官方 `0.2.2-rc.1` 的四处 Node 22.12 兼容补丁锚点与 `0.2.1-rc.5` **逐字一致**，因此用同一套补丁 + 同一个已验证的 Node 22.12.0，做出了经 31 项核验（含真 boot、会话创建与恢复）的完整升级包。
+>
+> **⚠️ 2026-11-14 更正**：上面「不存在」的结论已被本仓库自己的 CI 推翻 —— GitHub Actions run `43532556241` 成功编译出 **Node v24.19.0 iOS arm64 独立 CLI**（artifact `14095226518` / Release `node24-exp`，SHA `8bebb2a2…`）。且 rc.3 的 `engines.node >= 24.9.0` **不是 advisory**（`bin.js` 用 `import.meta.main`）。故 rc.3 单包已改用该成品，档位为 `+ios24`，详见「最新修复」章与 `one-package/README.md`。
 
 ---
 
@@ -76,17 +78,29 @@
 
 ```sh
 # rc.3 引擎树 bundle 见 one-package/README.md（exp/node24 分支或 Release 附件）
+# Node 24.19.0 iOS arm64 成品：GitHub Actions run 43532556241（success）
+#   -> artifact 14095226518 / Release node24-exp
+#   node-v24.19.0-iphoneos-arm64-jit
+#   SHA 8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
 sh app-bundle/build-app.sh                     # 独立 APP 小包（全屏 Web Clip + 保活）
 sh app-bundle/verify-app.sh
-sh one-package/build-one-package.sh \
+NODE_IOS_BIN=/path/to/node-v24.19.0-iphoneos-arm64-jit DSH_IOS_TAG=ios24 \
+  sh one-package/build-one-package.sh \
     bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz \
     app-bundle/payload \
-    dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
-sh one-package/verify-one-package.sh dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
+DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
 ```
 
 装完点桌面「DeepSeek Harness」全屏图标即用，不需要终端。已有对话、
 工作区、插件、配置、npm 源、插件市场区域设置全部保留。
+
+> **请装 `+ios24`，不要装 `+ios18`**：rc.3 的 `engines.node >= 24.9.0`
+> 不是 advisory —— `lib/bin.js` 用了 `import.meta.main`（Node 24.2+ 才
+> 支持），22.12.0 上 `dsh web` 起不来。之前把该字段当成软提示，是误判。
+> 更正见 `one-package/README.md` 顶部「两个档位」与
+> `docs/DSH-NODE-UPGRADE-EVALUATION.md`。`+ios18` 保留仅供对照/回滚。
 
 > **诚实边界**：① 预编译 `DSHLauncher` 仍是 `SFSafariViewController`（本机
 > Linux 无 iOS SDK，无法重编），但它已不是主入口；源码 `DSHAppDelegate.m`
@@ -94,8 +108,12 @@ sh one-package/verify-one-package.sh dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphon
 > iOS 16.7.15 SpringBoard 上的显示、`uicache` 注册、launchd `bootstrap`
 > 未做真机验证，**不承诺 A11 100% 成功**。③ rc.3 bundle 不在本分支
 > （`.gitignore` 忽略大文件），需从 `exp/node24` 分支或 Release 附件获取。
-> ④ Node 24 的本机 Linux 交叉编译是独立支线（`exp/node24`），本包仍使用
-> 真机验证过的 Node 22.12.0；rc.3 的 `engines.node >=24.9.0` 为 advisory。
+> ④ Node 24.19.0 是 **GitHub Actions 编译成功**（`success`），不是 A11 真机
+> 验证成功：JIT entitlement / 后台线程 W^X 在 iOS 16.7.15 上零验证；该
+> 二进制按 `--without-npm --without-inspector --with-intl=small-icu` 等
+> 裁剪，启动略慢、非英语 `Intl` 受限。本机 Linux 交叉编译是独立支线
+> （`exp/node24`），尚未产出可执行文件。唯一真机验证过的组合仍是
+> `+ios15`（rc.5 + Node 22.12.0），未做任何改动。
 
 ---
 
@@ -233,7 +251,9 @@ sh fix-ios15.sh --restore    # 回滚启动文件（用户数据不动）
 
 `dsh-doctor` 新增 **23~26 项**：git 预检短路 / 插件市场主线程解析 / 手动转化钩子（并核验不泄漏到 AI 路径）/ 扩展垫片语法，缺任一项都会尝试就地自愈再复检。
 
-> 关于「更新 DSH 到最新版」：**默认底座仍维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`**，但本次已额外交付经过 31 项核验的 `0.2.2-rc.1+ios16` 可选升级包（见上章）。官方 `engines.node >= 24.9.0` 是 advisory；实证确认其四处 Node 22.12 兼容补丁锚点与 0.2.1 逐字一致，同一套补丁 + 同一个已验证 Node 22.12.0 下真 boot、web 监听、会话创建与恢复全通。**Node 24.9.0 的 iOS arm64 可执行文件仍不存在**（公开可得最高是经真机验证的 Node 22.x，且机型为 A9 / iOS 15.8.5，非本项目 A11 / iOS 16.7.15），所以不换 Node 二进制。升级是可选的，已知代价：已装插件的 `runtimeVersion` 豁免需复核、rc 版本可能有破坏性变更、需重传整包。完整判据、候选对照表与"未来什么条件下才升"的门槛见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md)。
+> 关于「更新 DSH 到最新版」：**默认底座仍维持 `0.2.1-rc.5 + Node 22.12.0 + +ios15`**，但本次已额外交付经过 31 项核验的 `0.2.2-rc.1+ios16` 可选升级包（见上章）。**本节是 rc.1 时代结论，仅对 rc.1 成立**：当时 `engines.node >= 24.9.0` 被当作 advisory，实证确认其四处 Node 22.12 兼容补丁锚点与 0.2.1 逐字一致，同一套补丁 + 同一个已验证 Node 22.12.0 下真 boot、web 监听、会话创建与恢复全通；当时公开可得的 iOS arm64 Node 成品最高是经真机验证的 Node 22.x（机型 A9 / iOS 15.8.5），所以 +ios16 不换 Node 二进制。
+>
+> **⚠️ 2026-11-14 更正（重要）**：① 本仓库 CI 已成功编译出 **Node v24.19.0 iOS arm64**（run `43532556241` / Release `node24-exp`）；② 到了 **rc.3**，该 engines 字段**不再是 advisory** —— `lib/bin.js` 用 `import.meta.main`（Node 24.2+ 支持），Node 22 上 CLI 起不来。因此 rc.3 全屏单包必须、且已经改用 Node 24.19.0（档位 `+ios24`）。上面「不换 Node 二进制」**只适用于 `+ios16` 的 rc.1 包**，不可外推到 rc.3。已知代价：已装插件的 `runtimeVersion` 豁免需复核、rc 版本可能有破坏性变更、需重传整包。完整判据见 [`docs/DSH-NODE-UPGRADE-EVALUATION.md`](docs/DSH-NODE-UPGRADE-EVALUATION.md) 与 `one-package/README.md`。
 
 ---
 

@@ -15,6 +15,7 @@ DEB="${1:-$ROOT/dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb}"
 ENGINE_ARG="${2:-}"
 APPDIR_ARG="${3:-}"
 TOKEN=$(tr -d '\r\n' < "$HERE/dsh-web-token")
+VTAG="${DSH_IOS_TAG:-ios18}"   # 并列实验档（如 +ios24）用同一个标签核验
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); printf '  [ OK ] %s\n' "$*"; }
 bad()  { FAIL=$((FAIL+1)); printf '  [FAIL] %s\n' "$*"; }
@@ -192,7 +193,7 @@ else ok "postinst/prerm/extras 均零写入 \$DSH_HOME"; fi
 
 sec "6) control 元数据"
 grep -q '^Package: dev.airdevs.dsh$' "$TMP/DEBIAN/control" && ok "包名正确" || bad "包名错误"
-grep -q '^Version: 0.2.2-rc.3+ios18$' "$TMP/DEBIAN/control" && ok "版本 rc.3+ios18" || bad "版本错误"
+grep -q "^Version: 0.2.2-rc.3+${VTAG}\$" "$TMP/DEBIAN/control" && ok "版本 rc.3+${VTAG}" || bad "版本错误"
 grep -q '^Architecture: iphoneos-arm64$' "$TMP/DEBIAN/control" && ok "架构 iphoneos-arm64" || bad "架构错误"
 grep -q 'Replaces: dev.airdevs.dsh-app' "$TMP/DEBIAN/control" && ok "Replaces 独立 App 包" || bad "缺 Replaces"
 

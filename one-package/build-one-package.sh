@@ -24,6 +24,10 @@ ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
 OUT="${3:-$ROOT/dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb}"
 TOKEN=$(tr -d '\r\n' < "$HERE/dsh-web-token")
 SDE="${SOURCE_DATE_EPOCH:-1700000000}"
+# 版本标签：默认 ios18（Node 22.12.0 稳定档，逐字节保持已发布产物）。
+# 用 CI 编出的 Node 24 时显式传 DSH_IOS_TAG=ios24，产出并列实验档，
+# 绝不覆盖 +ios18 交付物，也不改仓库里的 control 原文件。
+TAG="${DSH_IOS_TAG:-ios18}"
 
 for c in python3 node dpkg-deb sha256sum tar; do
     command -v "$c" >/dev/null 2>&1 || { echo "缺少 $c" >&2; exit 1; }
@@ -70,9 +74,12 @@ fi
 [ -d "$ENGINE/node_modules/@deepseek-ai/dsh" ] || { echo "引擎树缺 node_modules/@deepseek-ai/dsh" >&2; exit 1; }
 
 # 内置 node 二进制（daemon/cli 的真实执行者）
+# 显式 NODE_IOS_BIN 必须优先于 bundles 里的默认 22.12.0：rc.3 的
+# engines.node >= 24.9.0 且 bin.js 用 import.meta.main（Node 24 才支持），
+# 用 CI 编出的 24.x 时若被旧版覆盖，包会「装得上但起不来」。
 if [ ! -f "$ENGINE/bin/node" ]; then
     NODE_SRC=""
-    for p in "$ROOT/bundles/node-v22.12.0-iphoneos-arm64" "${NODE_IOS_BIN:-}"; do
+    for p in "${NODE_IOS_BIN:-}" "$ROOT/bundles/node-v22.12.0-iphoneos-arm64"; do
         [ -n "$p" ] && [ -f "$p" ] && { NODE_SRC="$p"; break; }
     done
     [ -n "$NODE_SRC" ] || {
@@ -82,6 +89,13 @@ if [ ! -f "$ENGINE/bin/node" ]; then
     mkdir -p "$ENGINE/bin"; cp "$NODE_SRC" "$ENGINE/bin/node"
     echo "    内置 node: $NODE_SRC"
 fi
+# 无论来源都做 Mach-O + 大小校验，防止 x86 / 截断 / 占位文件混进包
+NB="$ENGINE/bin/node"
+NMAGIC=$(od -An -tx1 -N4 "$NB" 2>/dev/null | tr -d ' \n')
+[ "$NMAGIC" = "cffaedfe" ] || { echo "内置 node 不是 arm64 Mach-O (magic=$NMAGIC)" >&2; exit 1; }
+[ "$(wc -c < "$NB" | tr -d '[:space:]')" -gt 20000000 ] || {
+    echo "内置 node 疑似占位/截断文件" >&2; exit 1; }
+echo "    内置 node OK（arm64 Mach-O, $(wc -c < "$NB" | tr -d '[:space:]') 字节）"
 
 # ---------------------------------------------------------------- 2) iOS 补丁
 echo "==> 应用固定 loopback token 补丁（rc.3 静态 URL 鉴权）"
@@ -161,6 +175,13 @@ chmod 755 "$STAGE/var/jb/usr/lib/dsh/dsh-extras-postinst.sh" \
 
 # 3h DEBIAN
 cp -a "$HERE/DEBIAN/." "$STAGE/DEBIAN/"
+# 并列实验档（如 Node 24）只改 stage 内 control 的 Version，仓库原文件
+# 不动；默认 ios18 时一字不改，保证已发布产物逐字节可复现。
+if [ "$TAG" != "ios18" ]; then
+    sed "s/^Version: .*/Version: 0.2.2-rc.3+${TAG}/" \
+        "$HERE/DEBIAN/control" > "$STAGE/DEBIAN/control"
+    echo "    版本标签: +$TAG（并列实验档，不覆盖 +ios18）"
+fi
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 
 # ---------------------------------------------------------------- 4) 完整性断言

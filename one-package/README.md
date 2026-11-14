@@ -4,6 +4,64 @@
 「最新 DSH + 像官方 App 一样点图标即用」的主交付。稳定底座
 （`build.sh` 产出的 `0.2.1-rc.5+ios15` / `0.2.2-rc.1+ios16`）一个字节都没动。
 
+## 两个档位：请优先用 `+ios24`
+
+| 档位 | 内置 Node | DSH | 状态 |
+| --- | --- | --- | --- |
+| `+ios18` | 22.12.0（真机验证过的稳定档） | 0.2.2-rc.3 | **不推荐**：见下方不兼容说明 |
+| `+ios24` | **v24.19.0**（GitHub Actions 成功构建的 iOS arm64 成品） | 0.2.2-rc.3 | **推荐**，两个包并列、互不覆盖 |
+
+**为什么 `+ios18` 是坏的**：rc.3 的 `package.json` 声明 `engines.node >= 24.9.0`，
+且 `lib/bin.js` 用了 `import.meta.main`（Node 24.2+ 才支持）。22.12.0 上
+`dsh web` 会静默无输出 / 直接失败——静态检查全过也起不来服务。这不是
+「性能差一点」，是版本硬门槛。
+
+**`+ios24` 的 Node 来源（可追溯）**：GitHub Actions
+`node24-ios-jit (APRR / standard MAP_JIT)` run `43532556241`，2026-11-14
+00:12 UTC 触发、`success`（编译 2h36m），`workflow_dispatch` 的
+`node_ref` 填的是 `v24.19.0`，故 artifact 名为 `node24-ios-jit-v24.19.0`
+（id `14095226518`）。同一份二进制也发布在 Release `node24-exp`：
+
+```
+node-v24.19.0-iphoneos-arm64-jit   82539696 字节
+SHA-256  8bebb2a2e45824f9880ac99141ce0ee9359ec4fad72ccd1ef27bcd1341d77697
+```
+
+本机核验：`Mach-O 64-bit arm64 executable`、`cputype=ARM64`、
+版本串 `v24.19.0`、JIT entitlements 已由 `ldid -S` 签入
+（`allow-jit` / `allow-unsigned-executable-memory` / `dynamic-codesigning`
+等 10 项，`jit-count=3`）。包内 `bin/node` 与该产物**逐字节一致**。
+根 `ent.plist` 与 `node24/payload/ent.plist` 10 项完全相同，postinst 只在
+缺 entitlement 时才补签，不会覆盖掉 JIT 权限。
+
+构建（并列实验档，`DSH_IOS_TAG` 只改 stage 内 control 的 Version，
+仓库 `DEBIAN/control` 原文件与 `+ios18` 交付物都不动）：
+
+```sh
+NODE_IOS_BIN=/path/to/node-v24.19.0-iphoneos-arm64-jit \
+DSH_IOS_TAG=ios24 \
+  sh one-package/build-one-package.sh \
+    bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz \
+    app-bundle/payload \
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb
+
+DSH_IOS_TAG=ios24 sh one-package/verify-one-package.sh \
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios24_iphoneos-arm64.deb \
+    bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz app-bundle/payload
+```
+
+另有旁路可回滚的 `dev.airdevs.dsh-node24_0.2.2-rc.3+ios24exp1`（`exp/node24`
+分支的 `node24/build-experimental-deb.sh` 产出）：只落
+`/var/jb/usr/lib/dsh-node24/` 与 `dsh24*`，用 `dsh24-switch` 切换，
+适合先验证 Node 24 能否在设备上跑，不影响主包。
+
+**诚实边界**：`+ios24` 的 Node 24.19.0 是「编译成功」，**不是「A11 真机验证
+成功」**。JIT entitlement、后台线程 W^X 行为在 iPhone X / iOS 16.7.15 上
+零验证；该二进制按 `--without-npm --without-inspector --with-intl=small-icu
+--without-node-snapshot --without-node-code-cache --openssl-no-asm` 裁剪，
+启动会略慢、非英语 `Intl` 数据受限。稳定档 `+ios15`（rc.5 + Node 22.12.0）
+仍是唯一真机验证过的组合，未做任何改动。
+
 ## 为什么之前「依旧不是全屏」
 
 | 层 | 旧状态 | 结果 |
