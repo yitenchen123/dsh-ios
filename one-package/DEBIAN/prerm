@@ -1,0 +1,17 @@
+#!/bin/sh
+# 卸载前清理（保留 $DSH_HOME 里的会话与配置，避免误删用户数据）。
+set -e
+
+# --- single-package extras ---
+EX=/var/jb/usr/lib/dsh/dsh-extras-prerm.sh
+[ -x "$EX" ] && "$EX" "$@" || true
+
+JB=/var/jb
+if [ -L "$JB/bin/dsh" ]; then
+    rm -f "$JB/bin/dsh" 2>/dev/null || true
+fi
+# 若 profile.d 是我们写的，一并移除
+if [ -f "$JB/etc/profile.d/dsh.sh" ]; then
+    rm -f "$JB/etc/profile.d/dsh.sh" 2>/dev/null || true
+fi
+exit 0

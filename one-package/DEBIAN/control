@@ -1,0 +1,28 @@
+Package: dev.airdevs.dsh
+Name: DeepSeek Harness
+Version: 0.2.2-rc.3+ios18
+Section: Applications
+Priority: optional
+Architecture: iphoneos-arm64
+Maintainer: Air-Devs <air2@localhost>
+Replaces: dev.airdevs.dsh-app
+Provides: dev.airdevs.dsh-app
+Description: DeepSeek Harness 手机版（APP + 0.2.2-rc.3 引擎 + 手机操控 + 全屏入口）
+ 一个 deb 装齐：桌面 APP、DSH 0.2.2-rc.3 引擎、手机操控 MCP、全屏 Web Clip。
+ 点桌面图标自动确保/启动 DSH，不需要终端；工作区、会话、插件都保留在
+ $DSH_HOME，不会因为升级丢失。
+ 本版修复：
+ * 插件管理器 pnpm 改为包内绝对路径 + --jitless，Node 24 不再被
+   --no-expose-wasm 拒绝，Web UI 手动安装插件恢复可用；
+ * 插件市场索引解析改主线程 + redirect follow，A11 零 JIT 不再 SIGBUS，
+   目录站跳转也不再直接报错；
+ * 手动安装的 GitHub 预检短路，iOS 没有 git 也能装 GitHub 仓库；
+ * npm 源默认国内镜像，插件市场下载区域默认 china，目录和安装不再超时；
+ * Node 24.19.0 在 A11 上只能 --jitless（JIT 会 SIGBUS），启动档位自动选择；
+ * 全屏 Web Clip（无 Safari 栏），复用 Safari 登录态；桌面 APP 负责自动
+   启动、保活与手机操控。
+ 手机操控：内置 dsh-ios-control（真触控/截图/UI 树/OCR）与 8091 MCP 桥，
+ 模型可以像人一样看屏幕、点按、滑动、输入。
+ 说明：rc.3 前端手动安装的“生态插件转化”钩子受上游 client.js 版本差异
+ 影响尚未注入；npm/GitHub 手动安装本身已可用，后续版本补齐。
+Homepage: https://github.com/yitenchen123/dsh-ios
