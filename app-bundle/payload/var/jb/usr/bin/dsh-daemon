@@ -16,19 +16,21 @@ export npm_config_cache="$DSH_HOME/npm-cache"
 export npm_config_store_dir="$DSH_HOME/pnpm/store"
 export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=384}"
 
-mkdir -p "$DSH_HOME/logs" 2>/dev/null || true
+# 固定 loopback token —— 与 Web Clip 静态 URL、apply_fixed_token_patch.cjs
+# 的缺省值必须逐字一致（单一真相源：one-package/dsh-web-token）。
+# rc.3 的 processLaunchToken() 每次随机生成 token，而 Web Clip 的 URL 是
+# 静态的，二者不一致就会 401、前端 JS / 插件 / 工作区 / 对话全部不加载。
+export DSH_WEB_TOKEN="${DSH_WEB_TOKEN:-dshios-fixed-token-8f3a2c}"
 
-# 如果已经有 dsh（例如用户在终端里手动启动的）在服务同一端口，就不要
-# 再起第二个实例抢端口 —— 否则 launchd 的 KeepAlive 会变成崩溃重启循环。
-# 待机期间每 30s 探一次；原实例退出后自动接管。
-PORT="${DSH_WEB_PORT:-3080}"
-if [ -x "$JB/usr/bin/dsh-app-ctl" ]; then
-    while "$JB/usr/bin/dsh-app-ctl" ping >/dev/null 2>&1; do
-        sleep 30 2>/dev/null || sleep 30
-    done
-fi
+# 日志写到 jbroot 的系统日志区。绝不 mkdir/chown/chmod $DSH_HOME 里的任何
+# 东西 —— 用户的对话、工作区、插件、cordis.patch.yml、profiles/* 一律不碰。
+mkdir -p "$JB/var/log/dsh-app" 2>/dev/null || true
+
+# 旧版这里有一段 `while dsh-app-ctl ping; do sleep 30; done` 的「等别的 DSH
+# 实例退出」待机循环，但 ping 把 401 也判为可连，一旦 3080 上有任何返回 401
+# 的残留进程，launchd 管住的就是一个永远待机的 shell，DSH 本体再也起不来。
+# 本包是唯一的 DSH 启动途径（点图标即用，不需要终端），不存在需要避让的
+# 第二个实例，因此直接 exec，让 launchd 立刻管住真正的 DSH 进程。
 
 # 关键：launchd 管的是「这一个进程」，所以必须 exec，不能留一层 shell。
-# dsh 入口自身不带 exec（要留一次 SIGBUS 自动降级机会），它是这条链上
-# 唯一的中间进程；dsh-app-ctl 用 pkill/pgrep 时也以它为锚点。
 exec "$JB/usr/bin/dsh" web --no-open --port "${DSH_WEB_PORT:-3080}"

@@ -6,13 +6,25 @@
  *   this iOS app     = native app shell + the official DSH Web UI, served by the
  *                      on-device Harness host (kept alive by launchd)
  *
+ * IMPORTANT — this shell is NOT full-screen:
+ *   SFSafariViewController always shows Safari's top/bottom bars and a Close
+ *   button.  barCollapsingEnabled only hides them while scrolling; it is a
+ *   "near full-screen" view, not a normal app.  Users who installed only this
+ *   package correctly reported "it is still not full screen".
+ *
+ *   The real full-screen, official-app-like entry is the standalone Web Clip
+ *   (FullScreen=true) installed by one-package/dsh-extras-postinst.sh (and also
+ *   by app-bundle/DEBIAN/postinst in the standalone app package).  It has no
+ *   Safari bars, its own Home Screen icon and launch image.  This native app
+ *   now only (1) ensures the launchd keep-alive daemon and (2) acts as a
+ *   fallback opener; the Web Clip is the primary icon users tap.
+ *
  * Why SFSafariViewController instead of WKWebView:
  *   On iOS 16 rootless, a hand-signed jailbreak app's WKWebView cannot launch
  *   its WebContent XPC process ("Invalid connection identifier"), independent
  *   of entitlements.  SFSafariViewController runs the page in the system's own
- *   Safari view service, so the exact same Web UI (workspace + plugins
- *   untouched) renders reliably.  barCollapsingEnabled gives the near
- *   full-screen feel of the official app; the bar collapses on scroll.
+ *   Safari view service, so the exact same Web UI renders reliably as a
+ *   fallback.  Workspace + plugins + conversations are never rewritten.
  *
  * No Apple developer certificate: postinst re-signs this Mach-O with ldid.
  */
@@ -23,7 +35,11 @@
 extern char **environ;
 
 static NSString *const kDSHHomeDefault = @"/var/jb/var/mobile/.dsh";
-static NSString *const kDSHDefaultURL = @"http://127.0.0.1:3080/";
+// 必须与 one-package/dsh-web-token、Web Clip URL、launchd plist 的
+// DSH_WEB_TOKEN、apply_fixed_token_patch.cjs 缺省值逐字一致。裸 "/" 在 rc.3
+// 一定返回 401，前端 JS / 插件 / 工作区 / 对话全部不加载。
+static NSString *const kDSHWebToken = @"dshios-fixed-token-8f3a2c";
+static NSString *const kDSHDefaultURL = @"http://127.0.0.1:3080/?token=dshios-fixed-token-8f3a2c";
 
 static BOOL DSHIsLocalHost(NSString *host) {
     if (host.length == 0) return NO;
@@ -44,9 +60,9 @@ static BOOL DSHIsLocalURLString(NSString *s) {
 }
 
 static NSString *DSHLogPath(void) {
-    const char *env = getenv("DSH_HOME");
-    NSString *home = (env && *env) ? [NSString stringWithUTF8String:env] : kDSHHomeDefault;
-    return [home stringByAppendingPathComponent:@"logs/app.log"];
+    // 绝不写 $DSH_HOME：日志统一放 jbroot 的系统日志区，安装/启动/卸载
+    // 一个字节都不碰用户对话、工作区、插件、cordis.patch.yml、profiles/*。
+    return @"/var/jb/var/log/dsh-app/app.log";
 }
 
 static void DSHLog(NSString *fmt, ...) {
@@ -283,10 +299,12 @@ static void DSHLog(NSString *fmt, ...) {
     NSString *line = [self firstLineOfFile:webUrlFile];
     if (DSHIsLocalURLString(line)) [self.candidates addObject:line];
 
+    // daemon / wrapper 的日志已移出 $DSH_HOME，改到 jbroot 系统日志区。
+    NSString *logDir = @"/var/jb/var/log/dsh-app";
     NSArray *logs = @[
-        [home stringByAppendingPathComponent:@"logs/dsh-daemon.out.log"],
-        [home stringByAppendingPathComponent:@"logs/web.log"],
-        [home stringByAppendingPathComponent:@"logs/dsh.log"],
+        [logDir stringByAppendingPathComponent:@"dsh-daemon.out.log"],
+        [logDir stringByAppendingPathComponent:@"web.log"],
+        [logDir stringByAppendingPathComponent:@"dsh.log"],
     ];
     for (NSString *log in logs) {
         NSArray *urls = [self urlsFromLogTail:log];
@@ -296,7 +314,7 @@ static void DSHLog(NSString *fmt, ...) {
     }
 
     if (![self.candidates containsObject:kDSHDefaultURL]) [self.candidates addObject:kDSHDefaultURL];
-    NSString *localhost = @"http://localhost:3080/";
+    NSString *localhost = [@"http://localhost:3080/?token=" stringByAppendingString:kDSHWebToken];
     if (![self.candidates containsObject:localhost]) [self.candidates addObject:localhost];
 }
 
@@ -328,11 +346,10 @@ static void DSHLog(NSString *fmt, ...) {
         [self.tried addObject:s];
         NSURL *url = [NSURL URLWithString:s];
         if (!url) continue;
-        /* For the bare 3080 URL, SFSafariViewController shares Safari's
-           cookie store, so a logged-in Safari works.  Probe only to know
-           whether the port answers at all: any HTTP status (incl. 401) is
-           fine, a connection error means DSH is still starting. */
-        BOOL bare = [s isEqualToString:kDSHDefaultURL] || [s hasPrefix:@"http://localhost:3080"];
+        /* 所有候选 URL 都必须带有效 token。rc.3 的裸 "/" 无 cookie 一律返回
+           401 —— 旧版把「有 HTTP 应答（含 401）」当成端口就绪就直接 present，
+           结果点开图标只看到 401 白屏，插件 / 工作区 / 对话一个都不加载。
+           只有 2xx/3xx 才算 DSH Web UI 真正就绪；401/403/5xx 继续探下一个。 */
         NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url
                                                            cachePolicy:NSURLRequestReloadIgnoringLocalCacheData
                                                        timeoutInterval:5];
@@ -346,7 +363,7 @@ static void DSHLog(NSString *fmt, ...) {
             if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
                 code = ((NSHTTPURLResponse *)response).statusCode;
             }
-            BOOL ok = bare ? (code > 0) : (code >= 200 && code < 400);
+            BOOL ok = (code >= 200 && code < 400);
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self || self.safari) return;

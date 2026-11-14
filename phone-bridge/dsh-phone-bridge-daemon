@@ -4,11 +4,14 @@
 # 由 dev.airdevs.dsh.phone-bridge.plist 以 mobile 身份拉起，RunAtLoad +
 # KeepAlive，因此「终端被杀 / DSH 重启 / bridge 崩溃」后工具链都还在。
 #
-# 两件事：
-#  1) 以 mobile 身份幂等注册 DSH 的 MCP 客户端配置（root 写会触发 EACCES，
-#     这是 +ios12 真机踩过的坑，所以注册放在 daemon 里而不是 postinst）。
-#  2) exec 进纯 Node 的 MCP server，零 JIT 档（A11 上 undici/llhttp WASM
-#     会在默认档 SIGBUS），exec 保证 launchd 管住唯一 PID。
+# 只做一件事：exec 进纯 Node 的 MCP server，零 JIT 档（A11 上 undici/llhttp
+# WASM 会在默认档 SIGBUS），exec 保证 launchd 管住唯一 PID。
+#
+# 硬约束：绝不写 $DSH_HOME。旧版在这里 mkdir "$DSH_HOME/logs"，并自动跑
+# `ensure-config.cjs "$DSH_HOME" on` 往 cordis.patch.yml 注入 MCP 块 —— 后者
+# 等于改写用户已有的插件配置，和用户「对话/工作区/插件一个字节都不变」冲突。
+# 需要注册 MCP 时由用户显式执行 dsh-phone-bridge-ctl config-on（按需、可逆），
+# daemon 不再自动做。日志统一放 jbroot 系统日志区。
 JB=/var/jb
 D="$JB/usr/lib/dsh"
 BR="$JB/usr/lib/dsh-phone-bridge"
@@ -16,11 +19,7 @@ NODE="$D/bin/node"
 HOME="${HOME:-/var/mobile}"; export HOME
 DSH_HOME="${DSH_HOME:-$JB/var/mobile/.dsh}"; export DSH_HOME
 PATH="$JB/usr/bin:$JB/bin:/usr/bin:/bin:/usr/sbin:/sbin"; export PATH
-mkdir -p "$DSH_HOME/logs" 2>/dev/null || true
-
-if [ -x "$NODE" ] && [ -f "$BR/ensure-config.cjs" ]; then
-    "$NODE" "$BR/ensure-config.cjs" "$DSH_HOME" on >/dev/null 2>&1 || true
-fi
+mkdir -p "$JB/var/log/dsh-app" 2>/dev/null || true
 
 # shellcheck disable=SC2086
 exec "$NODE" --jitless --no-expose-wasm --require "$D/fetch-shim.cjs" \

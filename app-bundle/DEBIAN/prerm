@@ -1,11 +1,13 @@
 #!/bin/sh
 # prerm — 卸载/升级处理。
 #   upgrade: 不动服务（postinst 会 stop/enable 加载新 plist）
-#   remove/purge: 停 daemon，移除 APP 的 helper 与旧的独立插件文件；
-#                 保留 $DSH_HOME 里的会话/配置。
+#   remove/purge: 停 daemon，移除本包安装的 APP helper、旧独立插件文件与
+#                 全屏 Web Clip；$DSH_HOME 里的会话/工作区/插件一律保留。
 set -e
 JB=/var/jb
 CTL="$JB/usr/bin/dsh-app-ctl"
+# 与 postinst 对应，沙箱实测可用 DSH_WEBCLIP_DIR 覆盖到模拟目录。
+WCDIR="${DSH_WEBCLIP_DIR:-/var/mobile/Library/WebClips/133239ba-d3d0-422d-ba40-7945156fd8ea.webclip}"
 case "${1:-remove}" in
     upgrade|failed-upgrade|abort-upgrade)
         exit 0
@@ -21,4 +23,7 @@ rm -f "$JB/usr/bin/dsh-app-helper" \
 if [ -L "$JB/bin/dsh-app-ctl" ]; then
     rm -f "$JB/bin/dsh-app-ctl" 2>/dev/null || true
 fi
+# 只删本包安装的那一个 Web Clip；绝不遍历 / chown 用户的 WebClips 目录，
+# 更不碰 $DSH_HOME。
+rm -rf "$WCDIR" 2>/dev/null || true
 exit 0

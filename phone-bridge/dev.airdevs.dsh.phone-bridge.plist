@@ -37,9 +37,9 @@
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/var/jb/var/mobile/.dsh/logs/phone-bridge.err.log</string>
+	<string>/var/jb/var/log/dsh-app/phone-bridge.err.log</string>
 	<key>StandardOutPath</key>
-	<string>/var/jb/var/mobile/.dsh/logs/phone-bridge.out.log</string>
+	<string>/var/jb/var/log/dsh-app/phone-bridge.out.log</string>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>UserName</key>

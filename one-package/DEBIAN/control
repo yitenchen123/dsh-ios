@@ -7,22 +7,27 @@ Architecture: iphoneos-arm64
 Maintainer: Air-Devs <air2@localhost>
 Replaces: dev.airdevs.dsh-app
 Provides: dev.airdevs.dsh-app
-Description: DeepSeek Harness 手机版（APP + 0.2.2-rc.3 引擎 + 手机操控 + 全屏入口）
- 一个 deb 装齐：桌面 APP、DSH 0.2.2-rc.3 引擎、手机操控 MCP、全屏 Web Clip。
- 点桌面图标自动确保/启动 DSH，不需要终端；工作区、会话、插件都保留在
- $DSH_HOME，不会因为升级丢失。
- 本版修复：
- * 插件管理器 pnpm 改为包内绝对路径 + --jitless，Node 24 不再被
-   --no-expose-wasm 拒绝，Web UI 手动安装插件恢复可用；
- * 插件市场索引解析改主线程 + redirect follow，A11 零 JIT 不再 SIGBUS，
-   目录站跳转也不再直接报错；
- * 手动安装的 GitHub 预检短路，iOS 没有 git 也能装 GitHub 仓库；
- * npm 源默认国内镜像，插件市场下载区域默认 china，目录和安装不再超时；
- * Node 24.19.0 在 A11 上只能 --jitless（JIT 会 SIGBUS），启动档位自动选择；
- * 全屏 Web Clip（无 Safari 栏），复用 Safari 登录态；桌面 APP 负责自动
-   启动、保活与手机操控。
- 手机操控：内置 dsh-ios-control（真触控/截图/UI 树/OCR）与 8091 MCP 桥，
- 模型可以像人一样看屏幕、点按、滑动、输入。
- 说明：rc.3 前端手动安装的“生态插件转化”钩子受上游 client.js 版本差异
- 影响尚未注入；npm/GitHub 手动安装本身已可用，后续版本补齐。
+Description: DeepSeek Harness 手机版（APP + rc.3 引擎 + 全屏入口，单 deb）
+ 一个 deb 装齐：DSH 0.2.2-rc.3 纯 JS 引擎树、SpringBoard .app、launchd
+ 常驻 daemon、全屏 standalone Web Clip（FullScreen=true，无 Safari 栏）。
+ 点桌面图标即用，不需要终端；插件、工作区、对话从本机 Harness host
+ 原样加载，与官方桌面 App 的形态一致。
+ 本版修复（rc.3 全屏加载链）：
+ * rc.3 每次随机 launchToken，而 Web Clip 是静态 URL，旧版必然 401、
+   前端 JS / 插件 / 工作区 / 对话全不加载。现在用固定 loopback token
+   （DSH_WEB_TOKEN：launchd plist、补丁缺省值、Web Clip URL、常量文件
+   四处逐字一致），首次访问 303 换 HttpOnly cookie，之后全链路放行；
+ * 全屏 Web Clip 及其图标、extras 安装脚本、DSHLauncher、setuid helper、
+   usr/bin/dsh wrapper 全部真正打进 deb。旧版构建链多处漏文件，Web Clip
+   从来没装进设备，这正是「依旧不是全屏」的直接原因；
+ * 移除 daemon 里「401 也判可连」的 30s 待机死循环，ctl ping 只认
+   303 / 200，App 探针不再把 401 误判为就绪；
+ * 安装 / 卸载 / 启动零写入 $DSH_HOME：不再 chown -R / chmod -R /
+   chmod 777 / config-on / config-off / 写 .npmrc 与 state.json；日志
+   统一放 /var/jb/var/log/dsh-app。已有对话、工作区、插件、配置、npm
+   源、插件市场区域设置全部保留。
+ 插件市场 / 手动安装的 iOS 补丁沿用仓库 shims；rc.3 上游 client.js
+ 锚点差异用 DSH_RC3_CLIENT 指定的已验证成品替换（未指定时主加载链
+ 不受影响）。手机操控（phone-bridge）是独立可选工具链，不内嵌本包，
+ 以保持零写入链路最短。
 Homepage: https://github.com/yitenchen123/dsh-ios

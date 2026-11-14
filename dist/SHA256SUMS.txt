@@ -1,16 +1,21 @@
 # dsh-ios 交付物 SHA-256
-# 生成时间: 2026-11-11 UTC
+# 生成时间: 2026-11-11 UTC（2026-11-14 更新全屏单包与 APP 包）
 # 稳定底座: dsh 0.2.1-rc.5 / Node 22.12.0 / +ios15（真机验证，交付物字节未变）
 # 新增 +ios16: dsh 0.2.2-rc.1 可选升级包 / 桌面 APP + 保活 + 手机操控工具链
+# 最新 rc.3 全屏单包: DSH 0.2.2-rc.3 + 真全屏 Web Clip + 固定 loopback token
+#   + 零写入 $DSH_HOME（详见 one-package/README.md）
 # 复现: sh bootstrap.sh && sh build.sh && sh verify-repro.sh
 #       DSH_VER=0.2.2-rc.1 sh bootstrap.sh && DSH_VER=0.2.2-rc.1 sh build.sh
 #       sh app-bundle/build-app.sh && sh app-bundle/verify-app.sh
+#       sh one-package/build-one-package.sh <rc3-bundle> app-bundle/payload <out.deb>
 # 注: build.sh 打包前会把 stage 文件 mode 归一化（目录 755 / 文件 644|755），
 #     因此 `git archive | tar -x` 或非标准 umask 导致的 664/775 也不影响 1:1；
 #     verify-repro.sh 第三次构建会故意扰动 mode 做回归验证。
 # 独立核验: sh verify-deb.sh [deb路径]          两个 deb 各 57 项
 #           sh verify-022.sh <tree> <node22.12>  0.2.2 树 31 项（含真 boot）
-#           sh app-bundle/verify-app.sh           APP 包 73 项
+#           sh app-bundle/verify-app.sh           APP 包 77 项
+#           sh one-package/verify-one-package.sh <deb> <rc3-bundle> app-bundle/payload  单包 55 项
+#           sh app-bundle/verify-no-data-touch.sh  装/卸零写入实测
 #           sh phone-bridge/verify-phone-bridge.sh 工具链 28 项
 #           sh verify-phone-control.sh           旧接入方案 25 项
 # 一键校验: cd dist && sha256sum -c SHA256SUMS.txt
@@ -25,8 +30,10 @@
 f5548928a5fd83f727b9da0716519aa4abb0a15b9ed4acbd49de9944c799bf0f  dev.airdevs.dsh_0.2.2-rc.1+ios16_iphoneos-arm64.deb
 9497ba9807c8ec274b650852b4cd9d682b35b5d8672069650669960e28166a1a  fix-ios16.sh
 
-# --- +ios16 新增：桌面 APP / launchd 保活 / 内置手机工具链 ---
-878642fa57a8f97abd413f2578235d5dcdcc64466e4d76bc86107bd6a48e67a4  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.1-rc.5+ios16_iphoneos-arm64.deb
+# --- 最新 rc.3：全屏单包 + 独立 APP 包（远端 main 全屏/加载链/零写入修复）---
+# 注：两包均为 SOURCE_DATE_EPOCH=1700000000 可复现构建；稳定底座 +ios15 未变。
+927b5308dbf5800ddd455b354774dc64de9fd1eb45c7c9d3f4acc442ae7406f7  dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+8dd6e40272add95b28433fbcbb1d428aca1793fddb9e22a47fed2d2966ae83f9  ../app-bundle/dist/dev.airdevs.dsh-app_0.2.2-rc.3+ios18_iphoneos-arm64.deb
 
 # --- 可选生态插件（手动安装，不预装）---
 f9f74e0f485148acfe544b88e35c17da196b6ff4c6da4f7a6576a7c566cd068a  dsh-ios-phone-control-0.1.0.tgz

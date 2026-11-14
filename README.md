@@ -9,6 +9,96 @@
 
 ---
 
+## 最新修复 · 远端 `main` 全屏 / 加载链 / 数据零改动（rc.3 全屏单包）
+
+> 反馈：「远端依旧不是全屏，要求改成和官方 DeepSeek DSH App 一样，插件 /
+> 工作区 / 对话等完美正常加载」。修复在 `fix/remote-main-fullscreen` 落地，
+> **稳定底座 `+ios15` 与 `+ios16` 升级包一个字节都没动**
+> （`67d54667…` / `f5548928…` 已用 `sha256sum -c` 复核通过）。
+> 详见 [`one-package/README.md`](one-package/README.md)。
+
+### 为什么之前不是全屏、插件也不加载
+
+`SFSafariViewController` 永远带 Safari 顶栏/底栏/关闭按钮，
+`barCollapsingEnabled` 只是滚动时收栏 —— 它是「近似全屏」，不是普通 App。
+真正无浏览器栏的是 `FullScreen=true` 的 standalone Web Clip。但旧版
+`build-one-package.sh` **没把 `dsh-extras-postinst.sh` 打进包**，postinst 里
+`[ -x "$EX" ]` 恒为假，Web Clip 从来没装进设备；即使装了，rc.3 的
+`processLaunchToken()` 每次随机，而 Web Clip URL 是静态且不带 token，
+点开必然 401 —— 前端 JS、插件、工作区、对话一个都不加载。
+
+修法：**固定 loopback token**（`one-package/dsh-web-token` 单一真相源）+
+**把全屏 Web Clip 真正装进设备** + **launchd 常驻** + **零写入**。
+静态 URL `http://127.0.0.1:3080/?token=<固定值>` 首次访问返回
+`303 + HttpOnly Set-Cookie`，之后所有 API / SSE / WebSocket 走 cookie，
+与官方桌面 App「点开即用」一致。四处 token 由构建期与核验脚本强校验。
+
+### 修复清单（5 类 / 27 处）
+
+| 类 | 问题 | 修复 |
+| --- | --- | --- |
+| **A 全屏** | native App 是 `SFSafariViewController` 半屏壳 | 主入口改为 `FullScreen=true` Web Clip；native App 降级为「ensure daemon + 兜底打开」，源码 `DSHAppDelegate.m` 注释与探针同步纠正 |
+| | `dsh-extras-postinst.sh` 未打进单包，Web Clip 从未安装 | `build-one-package.sh` 补齐 extras 与 Web Clip 资产，`postinst` 缺文件时显式报错而非静默跳过 |
+| | `app-bundle` 包完全没有 Web Clip 资产 | `build-app.sh` 补上并校验 token 一致 |
+| | Web Clip 装了也没 `uicache` 刷新图标 | extras / postinst 补 `uicache -a` 与 native App 注册 |
+| **B 加载链** | rc.3 `launchToken` 随机 / Web Clip URL 无 token → 401 | `shims/apply_fixed_token_patch.cjs` 固定 token（env 优先 + 常量兜底），URL 带同一个 token |
+| | `dsh-app-ctl ping` 用 `statusCode < 500`，401 也算可连 | 改为带 token 探测，只认 `303` / `200` |
+| | `dsh-daemon` 的 `while ping; sleep 30` 待机死循环 | 删除，直接 `exec dsh web`，launchd 立刻管住真正的 DSH 进程 |
+| | App 探针把任意 HTTP code（含 401）判成功 | `DSHAppDelegate.m` 改为只认 2xx/3xx，候选 URL 全部带 token |
+| | `dsh-app-ui` 裸 URL、`web-url` / 日志找 token 全仓无写入点 | 统一固定 token，取消运行时 token 发现依赖 |
+| | 单包 deb 里没有 `/var/jb/usr/bin/dsh`，daemon 要 exec 它 | 补根 payload wrapper / doctor / pnpm / tier / shims 运行时 |
+| **C 构建链** | 未复制 `DSHLauncher` / helper / 图标；未调用 rc.3 transform | 全部补齐；transform 做成可选 `DSH_RC3_CLIENT` 并明确提示 |
+| | 未调用固定 token 补丁 | 构建期强制应用 + 全树断言 + `node --check` |
+| | 无 `chown 0:0` / mode 归一 / `SOURCE_DATE_EPOCH` / `-z9` | 补齐，两次构建 SHA 一致 |
+| | `chown -R 0:0` 在 `chmod 4755` 之前，清掉 setuid 位 | 顺序修正，helper 真正 4755（否则 App 无法拉起 daemon） |
+| | `build.sh` 不支持 rc.3 且报错含糊 | 明确引导到 `one-package/`；稳定链输出一个字节不改 |
+| **D 数据零写入** | postinst `chown -R 501:501` / `chmod -R` / `chmod 777` | 全部移除 |
+| | postinst 自动跑 `fix-session` 迁移、删 `.dsh-tier`、清 patch 软链 | 全部移除（保留用户已有数据） |
+| | `config-on` / `config-off` 改写 `cordis.patch.yml` | 移除自动调用，保留为手动可逆命令 |
+| | 写 `profiles/web/.npmrc` 与 `.dsh-market/state.json` | 移除，用户 npm 源 / 市场区域设置不变 |
+| | plist / daemon / ctl / ui / App 源码 / phone-bridge 日志写 `$DSH_HOME/logs` | 统一 `/var/jb/var/log/dsh-app`；bridge daemon 也去掉自动 `ensure-config on` |
+| **E 版本/验证/文档** | `verify-app.sh` 写死 `+ios16` deb 名，实跑第一行就退出 | 改 rc.3+ios18 并整体重写断言 |
+| | plist `ProgramArguments` 断言与实际不符、4b 段检查包里根本没有的 phone-bridge | 改为「含 dsh-daemon」与反向断言 |
+| | 三套 control 三个版本、旧 README 停在 +ios16 / rc.1 | app-bundle 与单包统一 `0.2.2-rc.3+ios18`（根 control 属稳定底座，不动） |
+| | control / 注释虚假承诺 SFSafariViewController 全屏 | 明确标注它是兜底壳，Web Clip 才是全屏入口 |
+
+### 验证结果（全部实跑）
+
+| 验证 | 结果 |
+| --- | --- |
+| `sh app-bundle/verify-app.sh` | **77 项 0 失败**（含全屏 Web Clip、setuid、两次构建可复现、稳定主包 SHA 未变） |
+| `sh one-package/verify-one-package.sh <deb> <bundle> app-bundle/payload` | **55 项 0 失败**（含两次构建 SHA 一致） |
+| 静态 Web Clip URL 鉴权黑盒（deb 内真实 rc.3 `BrowserAuth`） | 无 token→`401`；静态 URL→`303 + Set-Cookie`；带 cookie→放行；`/connect`→`302 + Set-Cookie` |
+| `sh app-bundle/verify-no-data-touch.sh` | 17 个预置用户数据文件 SHA-256 / mode / 属主 / 目录结构**逐项一致**；`cordis.patch.yml` 用户块完好；无 MCP 块注入 |
+| 稳定底座 | `dev.airdevs.dsh_0.2.1-rc.5+ios15` SHA `67d54667…` 未变；主包 payload 完全未改 |
+
+### 构建与安装
+
+```sh
+# rc.3 引擎树 bundle 见 one-package/README.md（exp/node24 分支或 Release 附件）
+sh app-bundle/build-app.sh                     # 独立 APP 小包（全屏 Web Clip + 保活）
+sh app-bundle/verify-app.sh
+sh one-package/build-one-package.sh \
+    bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz \
+    app-bundle/payload \
+    dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+sh one-package/verify-one-package.sh dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+```
+
+装完点桌面「DeepSeek Harness」全屏图标即用，不需要终端。已有对话、
+工作区、插件、配置、npm 源、插件市场区域设置全部保留。
+
+> **诚实边界**：① 预编译 `DSHLauncher` 仍是 `SFSafariViewController`（本机
+> Linux 无 iOS SDK，无法重编），但它已不是主入口；源码 `DSHAppDelegate.m`
+> 已修正，有 SDK 时可编出修正版。② 沙箱没有 A11 真机，Web Clip 在
+> iOS 16.7.15 SpringBoard 上的显示、`uicache` 注册、launchd `bootstrap`
+> 未做真机验证，**不承诺 A11 100% 成功**。③ rc.3 bundle 不在本分支
+> （`.gitignore` 忽略大文件），需从 `exp/node24` 分支或 Release 附件获取。
+> ④ Node 24 的本机 Linux 交叉编译是独立支线（`exp/node24`），本包仍使用
+> 真机验证过的 Node 22.12.0；rc.3 的 `engines.node >=24.9.0` 为 advisory。
+
+---
+
 ## 本次新增交付 · `+ios16`：最新版 DSH / 桌面 APP / 保活 / 手机工具链
 
 按「我的要求你要全部达到」逐项落地。全部是新增产物，**稳定底座 `+ios15` 的 deb 与热修字节未变**（仍为 `67d54667…` / `4ff34b64…`）。

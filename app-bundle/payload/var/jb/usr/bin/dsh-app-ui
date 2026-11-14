@@ -6,9 +6,15 @@
 JB=/var/jb
 CTL="$JB/usr/bin/dsh-app-ctl"
 PORT="${DSH_WEB_PORT:-3080}"
-URL="http://127.0.0.1:${PORT}/"
-LOG="$JB/var/mobile/.dsh/logs/app-ui.log"
-mkdir -p "$JB/var/mobile/.dsh/logs" 2>/dev/null || true
+# 缺省值与 daemon / Web Clip / 补丁一致；launchd 未注入 env 时也能对上。
+WEB_TOKEN="${DSH_WEB_TOKEN:-dshios-fixed-token-8f3a2c}"
+# 必须带 token：rc.3 的裸 "/" 无 cookie 一律 401，旧版这个裸 URL 打开就是
+# 白屏，插件 / 工作区 / 对话一个都不加载。
+URL="http://127.0.0.1:${PORT}/?token=${WEB_TOKEN}"
+LOGDIR="$JB/var/log/dsh-app"
+LOG="$LOGDIR/app-ui.log"
+# 日志在 jbroot 系统日志区，绝不写 $DSH_HOME。
+mkdir -p "$LOGDIR" 2>/dev/null || true
 say() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)" "$*" >> "$LOG" 2>/dev/null; }
 
 say "tapped: port=$PORT"

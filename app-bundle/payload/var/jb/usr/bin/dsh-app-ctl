@@ -8,8 +8,11 @@ PLIST="$JB/Library/LaunchDaemons/$LABEL.plist"
 APP="$JB/Applications/DSH.app"
 NODE="$JB/usr/lib/dsh/bin/node"
 PORT="${DSH_WEB_PORT:-3080}"
-DSHHOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
-LOGDIR="$DSHHOME/logs"
+# 与 daemon / Web Clip / apply_fixed_token_patch.cjs 逐字一致；从终端或
+# setuid helper 调用时 launchd 未必注入 env，必须自带同一个缺省值。
+WEB_TOKEN="${DSH_WEB_TOKEN:-dshios-fixed-token-8f3a2c}"
+# 日志在 jbroot 系统日志区，绝不读写 $DSH_HOME（用户对话/工作区/插件）。
+LOGDIR="$JB/var/log/dsh-app"
 
 # launchctl 在 rootless 上可能位于 jbroot，也可能直接可调用
 find_launchctl() {
@@ -20,17 +23,23 @@ find_launchctl() {
 }
 LC=$(find_launchctl 2>/dev/null || true)
 
-# 真探活：用包内 node 发 HTTP 请求，不依赖 curl/nc 是否存在
+# 真探活：用包内 node 发带 token 的 HTTP 请求，不依赖 curl/nc 是否存在。
+# rc.3 的裸 "/" 无 cookie 一律返回 401 —— 旧版用 `statusCode < 500` 把 401
+# 判成「可连」，于是 daemon 的待机循环永远等不到 DSH 退出、App 探针也误判
+# 成功，点开图标只看到 401 白屏。只有 303（有效 token 换 cookie）或 200
+# （已有会话）才算真正的 DSH Web UI 就绪。
 ping() {
     [ -x "$NODE" ] || return 1
     "$NODE" -e '
       const http=require("http");
-      const req=http.get({host:"127.0.0.1",port:Number(process.argv[1]),path:"/",timeout:1200},r=>{
-        r.resume(); process.exit(r.statusCode < 500 ? 0 : 1);
+      const path="/?token="+encodeURIComponent(process.argv[2]);
+      const req=http.get({host:"127.0.0.1",port:Number(process.argv[1]),path,timeout:1200},r=>{
+        r.resume();
+        process.exit((r.statusCode===303 || r.statusCode===200) ? 0 : 1);
       });
       req.on("error",()=>process.exit(1));
       req.on("timeout",()=>{req.destroy();process.exit(1)});
-    ' "$PORT" >/dev/null 2>&1
+    ' "$PORT" "$WEB_TOKEN" >/dev/null 2>&1
 }
 
 daemon_pid() {
@@ -84,10 +93,11 @@ do_register() {
 }
 
 ensure() {
-    # 即使当前 web 已经可连（例如用户手动起的 dsh），也要把 launchd
-    # daemon 加载好：它会待机，等手动实例退出后自动接管，实现「不靠终端」。
-    do_bootstrap || true
+    # 已经就绪就直接返回。旧版即使 web 可连也强行 do_bootstrap，而 daemon
+    # 已不再「待机避让」，那会在同一端口起第二个 DSH，KeepAlive 立刻变成
+    # 崩溃重启循环。现在只在确实探不到服务时才加载/拉起 launchd。
     if ping; then return 0; fi
+    do_bootstrap || true
     # 等最多 ~8s
     i=0
     while [ "$i" -lt 16 ]; do

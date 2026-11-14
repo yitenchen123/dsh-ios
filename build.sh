@@ -17,7 +17,22 @@ DSH_VER="${DSH_VER:-0.2.1-rc.5}"
 case "$DSH_VER" in
     0.2.1-rc.5) IOS_TAG="+ios15"; FIX_NAME="fix-ios15.sh" ;;
     0.2.2-rc.1) IOS_TAG="+ios16"; FIX_NAME="fix-ios16.sh" ;;
-    *) echo "不支持的 DSH_VER: $DSH_VER（可用 0.2.1-rc.5 / 0.2.2-rc.1）" >&2; exit 1 ;;
+    0.2.2-rc.3)
+        cat >&2 <<'EOF'
+DSH_VER=0.2.2-rc.3 走 one-package 单包构建链，不在 build.sh 的稳定链里。
+原因：rc.3 是 pnpm 隔离布局且上游 client.js 锚点变化，+ios15 补丁链无法
+直接命中；而 0.2.1-rc.5 稳定底座的 deb 必须与已发布 Release 逐字节一致，
+不能为了加 rc.3 支持而改动 build.sh 的输出。
+
+最新 DSH + 全屏 App 请执行：
+    sh one-package/build-one-package.sh \
+        bundles/dsh-nodemodules-0.2.2-rc.3+ios1.tar.gz \
+        app-bundle/payload \
+        dist/dev.airdevs.dsh_0.2.2-rc.3+ios18_iphoneos-arm64.deb
+    sh one-package/verify-one-package.sh <deb>
+EOF
+        exit 2 ;;
+    *) echo "不支持的 DSH_VER: $DSH_VER（可用 0.2.1-rc.5 / 0.2.2-rc.1；rc.3 见 one-package/）" >&2; exit 1 ;;
 esac
 # bootstrap.sh / verify-repro.sh 等子进程必须看到同一版本，才能下对 bundle。
 export DSH_VER

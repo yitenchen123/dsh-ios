@@ -1,17 +1,23 @@
 Package: dev.airdevs.dsh-app
 Name: DeepSeek Harness
-Version: 0.2.1-rc.5+ios18
+Version: 0.2.2-rc.3+ios18
 Section: Applications
 Priority: optional
 Architecture: iphoneos-arm64
 Maintainer: Air-Devs <air2@localhost>
 Depends: dev.airdevs.dsh (>= 0.2.1-rc.5+ios14)
-Description: The DeepSeek Harness app for iOS, in the official app's form.
- One app icon on the Home Screen. Tapping it starts the on-device Harness
- host (no terminal, no separate plugin), resolves the launch token and shows
- the unchanged DSH Web UI. Workspace, sessions and plugins stay server-side.
- The native app shell (SFSafariViewController), the setuid daemon helper and
- the launchd keep-alive daemon are all part of this package; the 125 MB
- Node/DSH runtime is the existing dev.airdevs.dsh engine dependency (the
- same role Electron's bundled Node plays in the official desktop app).
- Homepage: https://github.com/yitenchen123/dsh-ios
+Description: The DeepSeek Harness full-screen app for iOS (deb / SpringBoard .app form).
+ One Home Screen icon. Tapping it shows the unchanged DSH Web UI in a
+ standalone full-screen Web Clip (FullScreen=true, no Safari bars), with
+ workspace, sessions and plugins loaded normally from the on-device Harness
+ host. A launchd keep-alive daemon plus a fixed loopback launch token let the
+ static Web Clip URL authenticate on rc.3 (303 + HttpOnly cookie), so no
+ terminal and no per-launch token copying are needed.
+ The native SFSafariViewController shell in this package is only a fallback
+ opener and daemon bootstrapper; it is NOT the full-screen entry (it always
+ shows Safari bars). The 125 MB Node/DSH runtime is the existing
+ dev.airdevs.dsh engine dependency, the same role Electron's bundled Node
+ plays in the official desktop app.
+ Installing, launching and removing this package never writes $DSH_HOME:
+ conversations, workspaces, plugins and profiles are left byte-for-byte.
+Homepage: https://github.com/yitenchen123/dsh-ios

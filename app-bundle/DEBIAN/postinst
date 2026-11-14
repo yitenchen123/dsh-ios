@@ -1,9 +1,13 @@
 #!/bin/sh
 # postinst — DeepSeek Harness app (dev.airdevs.dsh-app)
 #
-# One app, no separate plugin: this package only installs DSH.app, its icons,
-# the setuid daemon helper and the launchd keep-alive daemon.  (The 125 MB
-# Node/DSH tree is the existing dev.airdevs.dsh engine dependency.)
+# 安装 DSH.app、其图标、setuid daemon helper、launchd 保活 daemon，以及
+# **真全屏的 standalone Web Clip**（FullScreen=true，无 Safari 顶栏/底栏）。
+# 125 MB Node/DSH 引擎树是 dev.airdevs.dsh 主包依赖，不在本包内。
+#
+# 硬约束：用户数据目录 $DSH_HOME（/var/jb/var/mobile/.dsh）里的对话、
+# 工作区、插件、cordis.patch.yml、profiles/* 一个字节都不写、不改属主、
+# 不改权限。日志统一放 jbroot 系统日志区 $JB/var/log/dsh-app。
 set -e
 JB=/var/jb
 APP="$JB/Applications/DSH.app"
@@ -11,7 +15,10 @@ PLIST="$JB/Library/LaunchDaemons/dev.airdevs.dsh.plist"
 CTL="$JB/usr/bin/dsh-app-ctl"
 ENT="$APP/entitlements.plist"
 HELPER="$JB/usr/bin/dsh-app-helper"
-DSHHOME="${DSH_HOME:-$JB/var/mobile/.dsh}"
+LOGDIR="$JB/var/log/dsh-app"
+WCSRC="$JB/usr/lib/dsh/webclip"
+# 设备端为 SpringBoard 读取的真实路径；DSH_WEBCLIP_DIR 仅供沙箱实测隔离。
+WCDIR="${DSH_WEBCLIP_DIR:-/var/mobile/Library/WebClips/133239ba-d3d0-422d-ba40-7945156fd8ea.webclip}"
 
 if [ ! -L "$JB" ]; then
     echo "dsh-app: 未检测到 rootless 越狱环境 (/var/jb)，跳过注册。" >&2
@@ -19,11 +26,8 @@ if [ ! -L "$JB" ]; then
 fi
 
 # --- 0) 清理 +ios17 时代的独立手机操控插件（本版不再随 APP 安装） ---
-BRCTL="$JB/usr/bin/dsh-phone-bridge-ctl"
-if [ -x "$BRCTL" ]; then
-    "$BRCTL" config-off >/dev/null 2>&1 || true
-    "$BRCTL" disable >/dev/null 2>&1 || true
-fi
+# 只删 jbroot 里的系统文件。绝不调用 dsh-phone-bridge-ctl config-off：
+# 那会改写 $DSH_HOME/cordis.patch.yml，等于删用户已有的插件配置。
 rm -f "$JB/Library/MobileSubstrate/DynamicLibraries/dsh-ios-control.dylib" \
       "$JB/Library/MobileSubstrate/DynamicLibraries/dsh-ios-control.plist" \
       "$JB/usr/bin/mcp-logreader" \
@@ -62,29 +66,44 @@ if [ -n "$LDID" ] && [ -f "$ENT" ]; then
 fi
 command -v trustcache >/dev/null 2>&1 && trustcache inject "$APP/DSHLauncher" 2>/dev/null || true
 
-# --- 3) 用户数据目录 mobile(501) ---
-mkdir -p "$DSHHOME/logs" 2>/dev/null || true
-chown -R 501:501 "$DSHHOME" 2>/dev/null || true
-chmod -R u+rwX "$DSHHOME" 2>/dev/null || true
-chmod 777 "$DSHHOME" "$DSHHOME/logs" 2>/dev/null || true
+# --- 3) 日志目录（jbroot 系统区，不是 $DSH_HOME） ---
+mkdir -p "$LOGDIR" 2>/dev/null || true
 
-# --- 4) launchd 保活：先 stop 再 enable，确保升级后读取新 plist ---
+# --- 4) 安装真全屏 standalone Web Clip（官方 App 形态的主入口） ---
+# SFSafariViewController 永远带 Safari 顶栏/底栏/关闭按钮，只是「近似全屏」。
+# FullScreen=true 的 Web Clip 才是无浏览器栏、有自己图标和启动画面的普通 App。
+# 其 URL 带固定 DSH_WEB_TOKEN，rc.3 首次访问 303 换 cookie，之后插件 /
+# 工作区 / 对话全部正常加载。
+if [ -f "$WCSRC/Info.plist" ]; then
+    mkdir -p "$WCDIR" 2>/dev/null || true
+    cp "$WCSRC/Info.plist" "$WCDIR/Info.plist" 2>/dev/null || true
+    cp "$WCSRC/icon.png"   "$WCDIR/icon.png"   2>/dev/null || true
+    cp "$WCSRC/icon.png"   "$WCDIR/Icon.png"   2>/dev/null || true
+    # 只 chown 本包新建的这一个目录，不碰用户其它 Web Clip，更不碰 $DSH_HOME。
+    chown -R 501:501 "$WCDIR" 2>/dev/null || true
+    echo "dsh-app: 全屏 Web Clip 已安装（无 Safari 栏）。"
+else
+    echo "dsh-app: [warn] 缺 $WCSRC/Info.plist，全屏图标未安装" >&2
+fi
+
+# --- 5) launchd 保活：先 stop 再 enable，确保升级后读取新 plist ---
 "$CTL" stop >/dev/null 2>&1 || true
 "$CTL" enable >/dev/null 2>&1 \
     || echo "dsh-app: [warn] launchd 未即时加载；越狱重启后 RunAtLoad 会拉起" >&2
 
-# --- 5) 注册桌面图标 ---
-"$CTL" register >/dev/null 2>&1 \
-    || echo "dsh-app: [warn] uicache 未即时生效；respring 一次或手动 dsh-app-ctl register" >&2
+# --- 6) 注册桌面图标（native APP + Web Clip 一起刷新） ---
+"$CTL" register >/dev/null 2>&1 || true
+for U in "$JB/usr/bin/uicache" "$JB/bin/uicache" /usr/bin/uicache; do
+    if [ -x "$U" ]; then "$U" -a >/dev/null 2>&1 || true; break; fi
+done
 
-# --- 6) 便捷软链 ---
+# --- 7) 便捷软链 ---
 if [ ! -e "$JB/bin/dsh-app-ctl" ]; then
     mkdir -p "$JB/bin" 2>/dev/null || true
     ln -sf "$CTL" "$JB/bin/dsh-app-ctl" 2>/dev/null || true
 fi
 
-echo "DeepSeek Harness APP 安装完成：桌面一个图标，点开自动确保/启动 DSH。"
-echo "  不需要终端；工作区/会话/插件都在 \$DSH_HOME，UI 不变。"
-echo "  旧的独立手机操控插件已移除；8090 端口会在下次 respring 后释放。"
+echo "DeepSeek Harness APP 安装完成：点桌面「DeepSeek Harness」全屏图标即用，不需要终端。"
+echo "  工作区 / 会话 / 插件全部保留在 \$DSH_HOME，本包一个字节都没有写。"
 echo "  管理：dsh-app-ctl status|ensure|restart|log|register"
 exit 0

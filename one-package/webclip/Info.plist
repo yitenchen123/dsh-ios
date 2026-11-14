@@ -174,7 +174,7 @@
 	<key>Precomposed</key>
 	<true/>
 	<key>URL</key>
-	<string>http://127.0.0.1:3080/</string>
+	<string>http://127.0.0.1:3080/?token=dshios-fixed-token-8f3a2c</string>
 	<key>WebClipType</key>
 	<string>default</string>
 </dict>

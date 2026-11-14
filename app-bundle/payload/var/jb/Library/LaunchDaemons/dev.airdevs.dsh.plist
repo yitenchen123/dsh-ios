@@ -8,6 +8,8 @@
 		<string>/var/jb/var/mobile/.dsh</string>
 		<key>DSH_WEB_PORT</key>
 		<string>3080</string>
+		<key>DSH_WEB_TOKEN</key>
+		<string>dshios-fixed-token-8f3a2c</string>
 		<key>HOME</key>
 		<string>/var/mobile</string>
 		<key>NODE_PATH</key>
@@ -45,9 +47,9 @@
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/var/jb/var/mobile/.dsh/logs/dsh-daemon.err.log</string>
+	<string>/var/jb/var/log/dsh-app/dsh-daemon.err.log</string>
 	<key>StandardOutPath</key>
-	<string>/var/jb/var/mobile/.dsh/logs/dsh-daemon.out.log</string>
+	<string>/var/jb/var/log/dsh-app/dsh-daemon.out.log</string>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>UserName</key>
